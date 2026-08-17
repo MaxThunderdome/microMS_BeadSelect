@@ -1,0 +1,245 @@
+# =====================================================================
+# laser_setup.yaml
+#
+# The ONLY file you should need to edit. Nothing in
+# microMS_beadtargeting.py needs changing to alter geometry, filtering
+# or output.
+#
+# All distances are in MICRONS unless the key says otherwise.
+# =====================================================================
+
+
+# ---------------------------------------------------------------------
+# 1. INPUT
+# ---------------------------------------------------------------------
+input:
+  # Scan of the MATRIX-COATED slide. TIFF, not JPEG.
+  # Fiducials must be visible in this image.
+  scan: beads009.tif
+
+  # Optional: skip detection and read a bead list instead.
+  # CSV with columns x_px,y_px,diameter_px. Leave null to detect.
+  beads: null
+
+
+# ---------------------------------------------------------------------
+# 2. BEAD GEOMETRY
+# ---------------------------------------------------------------------
+# Nominal bead diameter. Sets the size-filter window, and is the
+# fallback radius if a bead's own diameter could not be measured.
+bead-diameter: 90   # nominal; measured cluster is nearer 80
+
+# Accept beads whose measured diameter is within +/- this fraction of
+# bead-diameter. 0.35 on a 90 um bead accepts 58.5 - 121.5 um.
+bead-diameter-tolerance: 0.35
+
+# Isolation filter. Keep a bead only if the NEAREST OTHER OBJECT is at
+# least this far away, centre to centre.
+#
+# This runs against EVERY detected object, including debris that would
+# later fail the shape filter. The ordering is deliberate: a bead
+# beside a speck of dust is not isolated, and filtering shape first
+# would make the dust vanish and the bead falsely pass.
+min-bead-separation: 150
+
+
+# ---------------------------------------------------------------------
+# 3. SHOT PATTERN
+# ---------------------------------------------------------------------
+# One shot per angle, counter-clockwise from +x (image right).
+laser-shot-angles: [0, 90, 180, 270]
+
+shot-placement:
+  # How the shot distance is measured.
+  #
+  #   edge   -- each bead's OWN measured radius + edge-offset.
+  #             Adapts to real bead size. Shot-to-shot spacing then
+  #             differs between beads of different size.
+  #
+  #   center -- fixed laser-distance from every bead centre,
+  #             regardless of measured size. Uniform spacing; a
+  #             smaller bead gets a larger real gap to its edge.
+  #
+  distance-reference: edge
+
+  # Used when distance-reference is 'edge'. Clearance from the
+  # measured bead edge onto clean matrix.
+  edge-offset: 15
+
+  # Used when distance-reference is 'center'. For a 90 um bead this
+  # is 45 um radius + 15 um offset.
+  laser-distance: 60
+
+  # 'edge' mode only. A badly-measured bead can produce an absurd
+  # radius; clamp the radius used for placement to this window so one
+  # bad measurement cannot fling shots across the slide.
+  min-radius: 25
+  max-radius: 70
+
+# --- Laser footprint -------------------------------------------------
+# UNVERIFIED. Both numbers are placeholders. Confirm with the
+# instrument operator before an acquisition run.
+#
+# They affect ONLY the crater-overlap check, so wrong values silently
+# change which shots are dropped. They do not move any shot.
+focal-spot-um: 10        # smartbeam 3D fundamental focal spot
+beam-scan: true          # is beam scan enabled in the method?
+beam-scan-um: 20         # raster width added to the focal spot when on
+
+# Drop a shot whose crater would overlap the bead itself, or a
+# neighbouring object. Shots are dropped ONLY on genuine overlap --
+# never silently trimmed to satisfy a cosmetic clearance margin.
+enforce-bead-clearance: true
+
+
+# ---------------------------------------------------------------------
+# 4. REGISTRATION
+# ---------------------------------------------------------------------
+# A similarity transform (uniform scale + rotation + translation)
+# rather than affine. With exactly 3 fiducials an affine fit is
+# exactly determined and reports a meaningless zero residual; the
+# similarity fit still leaves a real one.
+#
+# Scanning face-down, or a stage whose y counts opposite to the image,
+# produces a mirrored mapping. Leaving this true lets the fit absorb
+# the flip -- but check the reported 'reflected' flag against what you
+# physically expect.
+allow-reflection: true
+
+# Warn if any fiducial lands further than this from its fitted position.
+max-fiducial-residual-um: 25
+
+# Filled in by:  python microMS_beadtargeting.py pick
+# x_px/y_px = pixel in the scan.  x_um/y_um = stage reading in microns.
+fiducials:
+  - x_px: 400.00
+    y_px: 3300.00
+    x_um: 3896.00
+    y_um: 32142.00
+  - x_px: 7700.00
+    y_px: 3300.00
+    x_um: 74998.00
+    y_um: 32142.00
+  - x_px: 400.00
+    y_px: 5650.00
+    x_um: 3896.00
+    y_um: 55031.00
+
+
+# ---------------------------------------------------------------------
+# 5. SLIDE BOUNDS  (stage microns; shots outside are dropped)
+# ---------------------------------------------------------------------
+slide-bounds:
+  x_min: 0
+  x_max: 80000
+  y_min: 0
+  y_max: 60000
+
+
+# ---------------------------------------------------------------------
+# 6. DETECTION  (ignored when input.beads is set)
+# ---------------------------------------------------------------------
+detection:
+  # microMS thresholds for BRIGHT objects. If beads are darker than
+  # the matrix background -- they usually are -- set this true.
+  invert: true
+
+  # flatfield -- subtract a large-kernel median, then connected
+  #              components. Handles the illumination and matrix
+  #              drift across a real slide, and bead-to-background
+  #              contrast under 10 grey levels. Use this.
+  # blob       -- OpenCV SimpleBlobDetector global threshold sweep.
+  #              Closest to microMS, but assumes a flat background.
+  method: flatfield
+
+  # Restrict detection to one slide. Without this the dark mounting
+  # hardware inverts to bright and floods the object list.
+  # Set to null to search the whole image.
+  roi:
+    x0: 800
+    y0: 3450
+    x1: 6900
+    y1: 5500
+
+  min-circularity: 0.70
+  min-convexity: 0.80
+
+  # --- Clump screening (flatfield method only) ---------------------
+  # Beads that physically touch merge into ONE connected component.
+  # The isolation filter cannot catch that: the clump arrives as a
+  # single object with nothing near it. These three tests do.
+  #
+  # A clump is not deleted -- it stays in the object list so that
+  # nearby single beads still fail isolation against it. It is marked
+  # and can never be accepted.
+  screen-clumps: true
+  max-aspect-ratio: 1.8      # elongated outline = side-by-side beads
+  min-solidity: 0.90         # notched hull = contact points
+  clump-core-fraction: 0.62  # distance-transform peak depth; lower
+                             # splits more aggressively
+
+  # flatfield only
+  background-kernel-px: 101   # must exceed bead diameter several times
+  threshold: 6                # grey levels above local background
+
+  # blob only
+  threshold-step: 10
+
+  # Loose pre-filter in pixels, before the micron size filter.
+  # Generous on purpose: the isolation filter needs to see debris.
+  min-diameter-px: 4
+  max-diameter-px: 30
+
+
+# ---------------------------------------------------------------------
+# 7. OUTPUT
+# ---------------------------------------------------------------------
+output:
+  prefix: targets          # -> targets.csv, targets_001.xeo, ...
+  serpentine-order: true   # sort beads for shortest stage travel
+  write-xeo: false         # keep false until a real .xeo is diffed
+  overlay: true            # QC image: accepted/rejected beads + shots
+  overlay-show: false      # also open it in a window
+  zoom: true               # shot_placement_zoom.png, densest region
+  zoom-window-px: 700
+  zoom-scale: 3
+
+
+# ---------------------------------------------------------------------
+# 7b. BEAD MANUAL SELECTION
+#
+# Written by:  python microMS_beadtargeting.py select
+#
+# Overrides live in manual_selection.csv and are stored by PIXEL
+# POSITION, not index, because detection indices shift whenever any
+# detection parameter changes. On reload each override is matched to
+# the nearest detected object within match-radius-px; unmatched
+# entries are reported rather than silently dropped.
+# ---------------------------------------------------------------------
+manual-selection:
+  match-radius-px: 12
+
+
+# ---------------------------------------------------------------------
+# 8. MTP CALIBRATION
+#
+# UnitCoord_X/Y in a .xeo file are FRACTIONS OF THE PLATE, not
+# microns. Converting stage um -> plate fraction needs three named MTP
+# grid positions measured on YOUR instrument with YOUR adapter seated.
+#
+#   x_um / y_um     -- stage reading, driven to on the instrument
+#   unit_x / unit_y -- that position's UnitCoord, read out of a real
+#                      .xeo exported from flexImaging
+#
+# Spread the three across the plate; do not cluster them.
+#
+# There is NO defensible default. While this list is empty the CSV is
+# still written and the .xeo is skipped, rather than emitting a
+# plausible-looking file that fires in the wrong place.
+# ---------------------------------------------------------------------
+mtp_calibration: []
+  # - name: A1
+  #   x_um: 0.0
+  #   y_um: 0.0
+  #   unit_x: 0.0
+  #   unit_y: 0.0
