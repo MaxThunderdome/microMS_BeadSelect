@@ -1168,7 +1168,7 @@ def pick_fiducials(cfg: dict) -> None:
         right-click on the image   set the pending pixel
         type stage x / stage y     into the boxes at the bottom
         Add fiducial               commit the pair, repeatedly, up to
-                                   max-fiducials (10 by default)
+                                   max-fiducials (15 by default)
         Remove nearest             delete the fiducial nearest the
                                    last right-click
         Reset                      clear the list

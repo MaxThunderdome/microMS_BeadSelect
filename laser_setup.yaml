@@ -115,7 +115,7 @@ max-fiducial-residual-um: 25
 # shown is in-sample and flatters the fit. Pick 4 or more whenever the
 # slide has enough recognisable marks, and spread them out -- see
 # min-fiducial-spread above.
-max-fiducials: 10
+max-fiducials: 15
 
 # Guard against a fiducial set that was never picked off this scan.
 # A similarity transform has 4 degrees of freedom and 3 fiducials give
@@ -149,6 +149,34 @@ fiducials:
     y_px: 4231.69
     x_um: 12321.00
     y_um: 12321.00
+  - x_px: 6453.35
+    y_px: 5332.99
+    x_um: 12321.00
+    y_um: 12321.00
+  - x_px: 4532.15
+    y_px: 5074.92
+    x_um: 12321.00
+    y_um: 1231.00
+  - x_px: 3719.70
+    y_px: 5944.72
+    x_um: 12321.00
+    y_um: 1231.00
+  - x_px: 7609.90
+    y_px: 5466.81
+    x_um: 1231.00
+    y_um: 12313.00
+  - x_px: 5115.20
+    y_px: 6604.24
+    x_um: 12321.00
+    y_um: 12312.00
+  - x_px: 4513.03
+    y_px: 5581.51
+    x_um: 12321.00
+    y_um: 12321.00
+  - x_px: 4121.14
+    y_px: 6948.33
+    x_um: 123123.00
+    y_um: 123123.00
 
 
 # ---------------------------------------------------------------------

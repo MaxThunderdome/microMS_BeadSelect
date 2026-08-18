@@ -113,7 +113,7 @@ a plain `imshow`.
 **Three fiducials is a floor, not a target.** A similarity fit through
 exactly 3 points leaves no spare, so `loo_residuals` returns None and the
 operator sees an in-sample residual only. The picker allows up to
-`max-fiducials` (10) and labels the Add button with the running count.
+`max-fiducials` (15) and labels the Add button with the running count.
 It also preloads the existing set, so it reports how many it loaded and
 runs `registration_sanity` on them before the operator adds more -- a
 stale set silently mixed with fresh picks is a bug that has shipped once.

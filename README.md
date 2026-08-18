@@ -111,7 +111,7 @@ Opens the scan. Coordinate entry is **in the window**, not the terminal.
 |---|---|
 | right-click on the image | set the pending pixel (gold X) |
 | type into stage x / stage y | the measured stage reading |
-| **Add fiducial** | commit the pair — press it repeatedly, the label shows `n/10` |
+| **Add fiducial** | commit the pair — press it repeatedly, the label shows `n/15` |
 | **Remove nearest** | delete the fiducial nearest the last right-click |
 | **Reset** | clear the list |
 | close the window | write into `laser_setup.yaml` |
@@ -125,7 +125,7 @@ in-sample — it flatters the fit and tells you almost nothing. **Pick four or
 more** whenever the slide has enough recognisable marks, and spread them across
 the slide rather than along one edge; three marks in a line leave rotation and
 scale poorly determined even when the residual looks small. The ceiling is
-`max-fiducials` in the YAML, 10 by default, and the Add button carries the
+`max-fiducials` in the YAML, 15 by default, and the Add button carries the
 running count so the minimum is not mistaken for a maximum.
 
 **The list is preloaded** from `laser_setup.yaml` so a session can be resumed —
