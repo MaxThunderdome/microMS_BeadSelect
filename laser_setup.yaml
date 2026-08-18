@@ -185,7 +185,7 @@ detection:
     # (800,3450)-(6900,5500) sat on the dark gap BETWEEN the two slides,
     # where the speckle is debris, not beads, and it clipped the real
     # deposit at y=5500. Re-measure this per scan.
-    x0: 2800
+    x0: 1120
     y0: 4850
     x1: 9300
     y1: 6600
