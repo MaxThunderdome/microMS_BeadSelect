@@ -132,6 +132,19 @@ that is the point of them. Keep them.
 
 Prefer showing results in the terminal over writing extra files.
 
+## Deliberate omissions
+
+`MANUAL_COVERAGE.md` records what the microMS User Guide contains, what we
+implement, what we deliberately skip, and what is genuinely missing. Read it
+before adding a feature "because microMS has it" — several such features
+(fluorescence filtering, histogram stratification, rectangular and hexagonal
+packing, multiple blob lists) are omitted on purpose because this workflow
+profiles the matrix halo around single isolated beads rather than sorting cell
+populations or imaging each object.
+
+The two acknowledged gaps worth implementing are a threshold view and manual
+bead addition. Both are specified in that document.
+
 ## Current open work
 
 - Measure `mtp_calibration` on the instrument; ask Dr. Neumann first for the
