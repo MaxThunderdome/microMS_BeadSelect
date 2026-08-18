@@ -703,6 +703,105 @@ def test_detect_in_box_finds_objects_outside_the_roi(cfg, tmp_path,
     assert roi_written.get("box", (None,))[0] <= 20
 
 
+@pytest.mark.skipif(
+    not _gui_backend(), reason="select window needs a GUI backend")
+def test_detect_in_box_does_not_duplicate_known_objects(cfg, tmp_path,
+                                                        monkeypatch):
+    """
+    The box drawn for 'Detect in box' almost always overlaps ground the
+    configured ROI already covered, so detection finds those objects a
+    second time.
+
+    A duplicate is not merely a double count. It lands within a pixel or
+    two of its own twin, so when the filters re-run over the union that
+    bead's nearest neighbour is itself, it fails the isolation test, and
+    a bead the operator had already accepted silently stops being a
+    target. That is the regression this pins.
+    """
+    import gc
+    import matplotlib
+    matplotlib.use(_gui_backend(), force=True)
+    import matplotlib.pyplot as plt
+    import matplotlib.widgets as W
+    from matplotlib.colors import to_rgba
+    from matplotlib.patches import Circle
+    import cv2
+
+    GREEN = to_rgba("#2ca02c")
+
+    img = np.full((700, 900), 200, np.uint8)
+    inside = [(500, 300), (620, 430), (700, 180)]
+    outside = [(80, 300), (170, 430), (260, 180)]
+    for x, y in inside + outside:
+        cv2.circle(img, (x, y), 5, 90, -1)
+    scan = tmp_path / "scan.png"
+    cv2.imwrite(str(scan), img)
+
+    c = dict(cfg)
+    c["input"] = dict(c["input"])
+    c["input"]["scan"] = str(scan)
+    c["input"]["beads"] = None
+    c["detection"] = dict(c["detection"])
+    c["detection"]["roi"] = {"x0": 350, "y0": 0, "x1": 900, "y1": 700}
+
+    seen = {"b": []}
+    B = W.Button
+    monkeypatch.setattr(W, "Button", lambda ax, l, **k: (
+        seen["b"].append(B(ax, l, **k)) or seen["b"][-1]))
+    monkeypatch.setattr(M, "save_manual", lambda e, **k: None)
+    monkeypatch.setattr(M, "load_manual", lambda *a, **k: [])
+    monkeypatch.setattr(M, "save_roi", lambda *a, **k: True)
+
+    r = {}
+
+    def circles(ax):
+        return [p for p in ax.patches if isinstance(p, Circle)]
+
+    def interact(*a, **k):
+        labels = [b.label.get_text() for b in seen["b"]]
+        det = seen["b"][labels.index("Detect in box")]
+        fig = det.ax.figure
+        ax = fig.axes[0]
+        r["before"] = len(circles(ax))
+
+        # A box over the WHOLE image: everything the ROI already found
+        # is inside it, so every one of those is a duplicate candidate.
+        rs = next(o for o in gc.get_objects()
+                  if isinstance(o, W.RectangleSelector) and o.ax is ax)
+        ec, er = type("E", (), {})(), type("E", (), {})()
+        ec.xdata, ec.ydata = 5.0, 5.0
+        er.xdata, er.ydata = 895.0, 695.0
+        rs.onselect(ec, er)
+        det._observers.process("clicked", None)
+
+        r["after"] = len(circles(ax))
+        r["centres"] = [p.center for p in circles(ax)]
+        r["green_at_500_300"] = min(
+            circles(ax),
+            key=lambda p: (p.center[0] - 500) ** 2 + (p.center[1] - 300) ** 2
+        ).get_edgecolor() == GREEN
+
+    monkeypatch.setattr(plt, "show", interact)
+    M.bead_manual_selection(c)
+    plt.close("all")
+
+    # Only the three objects left of the ROI are new. Without the
+    # duplicate screen this would grow by six, not three.
+    assert r["after"] - r["before"] == 3, (r["before"], r["after"])
+
+    # No object sits on top of another.
+    dup = float(c.get("manual-selection", {}).get("redetect-duplicate-px", 10))
+    pts = np.array(r["centres"], float)
+    d = np.hypot(pts[:, None, 0] - pts[None, :, 0],
+                 pts[:, None, 1] - pts[None, :, 1])
+    np.fill_diagonal(d, np.inf)
+    assert d.min() > dup, d.min()
+
+    # And a bead that was already a target is still one, rather than
+    # having failed isolation against its own twin.
+    assert r["green_at_500_300"]
+
+
 def test_zoom_about_cursor_keeps_point_fixed():
     matplotlib = pytest.importorskip("matplotlib")
     matplotlib.use("Agg")
