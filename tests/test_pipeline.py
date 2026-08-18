@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import microMS_beadtargeting as M  # noqa: E402
@@ -451,12 +452,9 @@ def test_review_sheet_covers_every_accepted_bead(cfg, transform, tmp_path):
         b.x_um, b.y_um = transform.px_to_um([[b.x_px, b.y_px]])[0]
     M.place_shots(beads, c)
 
-    old = M.REVIEW_DIR
-    M.REVIEW_DIR = tmp_path / "image confirmation"
-    try:
-        pages = M.draw_shot_review(beads, c, transform, scan, "2026-01-02 03:04:05")
-    finally:
-        M.REVIEW_DIR = old
+    outdir = tmp_path / "outputs" / "review_2026-01-02_030405"
+    pages = M.draw_shot_review(beads, c, transform, scan,
+                               "2026-01-02 03:04:05", outdir)
 
     assert len(pages) == 3, [p.name for p in pages]      # 4 + 4 + 1
     assert all(p.exists() and p.stat().st_size > 0 for p in pages)
@@ -471,14 +469,10 @@ def test_review_writes_nothing_without_accepted_beads(cfg, transform, tmp_path):
     scan = tmp_path / "scan.png"
     cv2.imwrite(str(scan), np.full((200, 200), 200, np.uint8))
     beads = [M.Bead(x_px=50.0, y_px=50.0, diameter_px=10.0, accepted=False)]
-    old = M.REVIEW_DIR
-    M.REVIEW_DIR = tmp_path / "image confirmation"
-    try:
-        assert M.draw_shot_review(beads, cfg, transform, scan,
-                                  "2026-01-02 03:04:05") == []
-        assert not M.REVIEW_DIR.exists()
-    finally:
-        M.REVIEW_DIR = old
+    outdir = tmp_path / "outputs" / "review_2026-01-02_030405"
+    assert M.draw_shot_review(beads, cfg, transform, scan,
+                              "2026-01-02 03:04:05", outdir) == []
+    assert not outdir.exists()          # no empty folder either
 
 
 def _gui_backend():
@@ -551,6 +545,162 @@ def test_picker_stops_at_max_fiducials(cfg, tmp_path, monkeypatch):
 
     assert add_btn.label.get_text().endswith("5/5")
     plt.close("all")
+
+
+SAMPLE_YAML = 'detection:\n  # keep me\n  roi:\n    # and me\n    x0: 100\n    y0: 200\n    x1: 300\n    y1: 400\n  method: flatfield\n'
+PARTIAL_YAML = 'detection:\n  roi:\n    x0: 1\n    y0: 2\n'
+NOROI_YAML = 'detection:\n  method: flatfield\n'
+
+
+def test_save_roi_rewrites_values_and_keeps_comments(tmp_path):
+    """
+    'Detect in box' widens detection.roi on close. The YAML comments are
+    the documentation for every tunable, so the rewrite must be surgical
+    -- a yaml.dump round-trip would silently delete all of them.
+    """
+    p = tmp_path / "laser_setup.yaml"
+    p.write_text(SAMPLE_YAML)
+    assert M.save_roi(10, 20, 900, 800, path=p) is True
+    out = p.read_text()
+    assert "# keep me" in out and "# and me" in out
+    assert "method: flatfield" in out
+    roi = yaml.safe_load(out)["detection"]["roi"]
+    assert roi == {"x0": 10, "y0": 20, "x1": 900, "y1": 800}
+
+
+def test_save_roi_reports_failure_rather_than_lying(tmp_path):
+    """
+    If the block is not in the expected shape the caller must be able to
+    tell the operator to edit by hand. Silently reporting success would
+    leave 'run' detecting the old region and discarding their picks.
+    """
+    p = tmp_path / "laser_setup.yaml"
+    p.write_text(NOROI_YAML)
+    assert M.save_roi(1, 2, 3, 4, path=p) is False
+    p.write_text(PARTIAL_YAML)
+    assert M.save_roi(1, 2, 3, 4, path=p) is False        # x1 / y1 absent
+
+
+def test_overrides_survive_a_redetect(cfg):
+    """
+    'Detect in box' re-runs every filter over the union, which resets the
+    accepted flags. Overrides made in that session live on the objects,
+    not on disk, so they must be re-applied by position afterwards.
+    """
+    beads = [M.Bead(x_px=100.0, y_px=100.0, diameter_px=10.0),
+             M.Bead(x_px=500.0, y_px=500.0, diameter_px=10.0)]
+    session = [(100.0, 100.0, "accept"), (500.0, 500.0, "reject")]
+    assert M.apply_override_entries(beads, session, cfg) == (2, 0)
+    assert beads[0].accepted and beads[0].manual == "accept"
+    assert not beads[1].accepted and beads[1].reject_category == "manual"
+
+    # An override whose bead vanished must be counted, not dropped quietly.
+    assert M.apply_override_entries(
+        beads, [(9000.0, 9000.0, "accept")], cfg) == (0, 1)
+
+
+@pytest.mark.skipif(
+    not _gui_backend(), reason="select window needs a GUI backend")
+def test_detect_in_box_finds_objects_outside_the_roi(cfg, tmp_path,
+                                                     monkeypatch):
+    """
+    A deposit outside detection.roi is never examined, so it shows as a
+    blank patch. 'Detect in box' must find it, re-run every filter over
+    the union, and keep the overrides already made in this session.
+
+    Assertions read the patch COLOUR, which encodes accepted/rejected.
+    Line width only tracks the `manual` flag, and the re-filter never
+    clears that -- checking width passes even when the overrides are
+    silently dropped.
+    """
+    import gc
+    import matplotlib
+    matplotlib.use(_gui_backend(), force=True)
+    import matplotlib.pyplot as plt
+    import matplotlib.widgets as W
+    from matplotlib.colors import to_rgba
+    import cv2
+
+    GREEN = to_rgba("#2ca02c")        # accepted
+    BLUE = to_rgba("#1f77b4")         # manually rejected
+
+    img = np.full((700, 900), 200, np.uint8)
+    inside = [(500, 300), (620, 430), (700, 180)]
+    outside = [(80, 300), (170, 430), (260, 180)]
+    for x, y in inside + outside:
+        cv2.circle(img, (x, y), 5, 90, -1)
+    scan = tmp_path / "scan.png"
+    cv2.imwrite(str(scan), img)
+
+    c = dict(cfg)
+    c["input"] = dict(c["input"])
+    c["input"]["scan"] = str(scan)
+    c["input"]["beads"] = None
+    c["detection"] = dict(c["detection"])
+    c["detection"]["roi"] = {"x0": 350, "y0": 0, "x1": 900, "y1": 700}
+
+    seen = {"b": []}
+    B = W.Button
+    monkeypatch.setattr(W, "Button", lambda ax, l, **k: (
+        seen["b"].append(B(ax, l, **k)) or seen["b"][-1]))
+    monkeypatch.setattr(M, "save_manual", lambda e, **k: None)
+    monkeypatch.setattr(M, "load_manual", lambda *a, **k: [])
+    roi_written = {}
+    monkeypatch.setattr(M, "save_roi", lambda *a, **k: (
+        roi_written.update(box=a) or True))
+
+    r = {}
+
+    def circles(ax):
+        # ax.patches also holds the RectangleSelector's own Rectangle.
+        from matplotlib.patches import Circle as _C
+        return [p for p in ax.patches if isinstance(p, _C)]
+
+    def near(ax, x, y):
+        return min(circles(ax),
+                   key=lambda p: (p.center[0] - x) ** 2 + (p.center[1] - y) ** 2)
+
+    def interact(*a, **k):
+        labels = [b.label.get_text() for b in seen["b"]]
+        det = seen["b"][labels.index("Detect in box")]
+        fig = det.ax.figure
+        ax = fig.axes[0]
+        r["before"] = list(circles(ax))
+
+        # Reject a bead the filters accepted. If the overrides are not
+        # re-applied after re-detection, the re-filter accepts it again
+        # and it turns green.
+        assert near(ax, 500, 300).get_edgecolor() == GREEN
+        ev = type("E", (), {})()
+        ev.inaxes, ev.button = ax, 3
+        ev.xdata, ev.ydata = 500.0, 300.0
+        fig.canvas.callbacks.process("button_press_event", ev)
+        assert near(ax, 500, 300).get_edgecolor() == BLUE
+
+        rs = next(o for o in gc.get_objects()
+                  if isinstance(o, W.RectangleSelector) and o.ax is ax)
+        ec, er = type("E", (), {})(), type("E", (), {})()
+        ec.xdata, ec.ydata = 20.0, 20.0
+        er.xdata, er.ydata = 340.0, 680.0
+        rs.onselect(ec, er)
+        det._observers.process("clicked", None)
+
+        r["new"] = [p for p in circles(ax) if p not in r["before"]]
+        r["override_colour"] = near(ax, 500, 300).get_edgecolor()
+
+    monkeypatch.setattr(plt, "show", interact)
+    M.bead_manual_selection(c)
+    plt.close("all")
+
+    # the three beads left of the ROI were invisible before
+    assert len(r["new"]) >= 3, len(r["new"])
+    # the filters ran over them, so the isolated ones came out accepted
+    assert any(p.get_edgecolor() == GREEN for p in r["new"]), \
+        [p.get_edgecolor() for p in r["new"]]
+    # and the override made before re-detection survived the re-filter
+    assert r["override_colour"] == BLUE
+    # run must be told to look there too, or it would discard the picks
+    assert roi_written.get("box", (None,))[0] <= 20
 
 
 def test_zoom_about_cursor_keeps_point_fixed():

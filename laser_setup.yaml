@@ -141,42 +141,14 @@ fiducials:
     y_px: 3300.00
     x_um: 3896.00
     y_um: 32142.00
-  - x_px: 9626.07
-    y_px: 7372.46
-    x_um: 9626.00
-    y_um: 7372.00
-  - x_px: 256.01
-    y_px: 4231.69
-    x_um: 12321.00
-    y_um: 12321.00
-  - x_px: 6453.35
-    y_px: 5332.99
-    x_um: 12321.00
-    y_um: 12321.00
-  - x_px: 4532.15
-    y_px: 5074.92
-    x_um: 12321.00
-    y_um: 1231.00
-  - x_px: 3719.70
-    y_px: 5944.72
-    x_um: 12321.00
-    y_um: 1231.00
-  - x_px: 7609.90
-    y_px: 5466.81
+  - x_px: 5182.11
+    y_px: 5180.06
     x_um: 1231.00
-    y_um: 12313.00
-  - x_px: 5115.20
-    y_px: 6604.24
-    x_um: 12321.00
     y_um: 12312.00
-  - x_px: 4513.03
-    y_px: 5581.51
-    x_um: 12321.00
-    y_um: 12321.00
-  - x_px: 4121.14
-    y_px: 6948.33
-    x_um: 123123.00
-    y_um: 123123.00
+  - x_px: 5153.43
+    y_px: 6527.77
+    x_um: 123.00
+    y_um: 123.00
 
 
 # ---------------------------------------------------------------------
@@ -252,6 +224,13 @@ detection:
 # 7. OUTPUT
 # ---------------------------------------------------------------------
 output:
+  # Every command writes into outputs/<command>_<date>_<time>/, so a
+  # re-run never overwrites the previous answer and each folder is a
+  # complete record of one invocation. Set per-run-folder false to
+  # write straight into outputs/ and overwrite in place.
+  directory: outputs
+  per-run-folder: true
+
   prefix: targets          # -> targets.csv, targets_001.xeo, ...
   serpentine-order: true   # sort beads for shortest stage travel
   write-xeo: false         # keep false until a real .xeo is diffed
@@ -276,6 +255,14 @@ output:
 manual-selection:
   match-radius-px: 12
 
+  # 'Detect in box' in the select window re-runs detection over just the
+  # rectangle you drew. That box usually overlaps ground already covered,
+  # so anything found within this distance of an existing object is
+  # treated as the same object and dropped. A duplicate would not merely
+  # double-count: it would sit on top of its own twin and make that bead
+  # fail the isolation test against itself.
+  redetect-duplicate-px: 10
+
 
 # ---------------------------------------------------------------------
 # 7d. SHOT CONFIRMATION SHEETS
@@ -292,6 +279,11 @@ manual-selection:
 # sampling, because the point is to catch the one bead that went wrong.
 # ---------------------------------------------------------------------
 review:
+  # Whole-slide overview: which beads are targeted, no shot pattern.
+  # At slide scale a 30 um crater is a fraction of a pixel, so the
+  # angles would be noise; the per-bead panels carry that.
+  overview-px: 2400         # long edge of the overview image
+
   panel-px: 160             # scan pixels shown around each bead
   panel-scale: 3            # magnification of that crop
   columns: 6                # panels per row

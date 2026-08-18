@@ -169,6 +169,34 @@ def save_fiducials(fids: list[dict], path: Path = CONFIG_PATH) -> None:
     path.write_text("\n".join(lines[:start] + block + lines[end:]) + "\n")
 
 
+def save_roi(x0: int, y0: int, x1: int, y1: int,
+             path: Path = CONFIG_PATH) -> bool:
+    """
+    Rewrite the four detection.roi values in place, leaving every
+    comment intact. Returns False if the block is not in the expected
+    shape, in which case the caller must tell the operator to edit it
+    by hand rather than pretend it was saved.
+    """
+    lines = path.read_text().splitlines()
+    try:
+        i = next(k for k, ln in enumerate(lines) if ln.rstrip() == "  roi:")
+    except StopIteration:
+        return False
+    want = {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+    seen = set()
+    for k in range(i + 1, min(i + 12, len(lines))):
+        stripped = lines[k].strip()
+        for key, val in want.items():
+            if stripped.startswith(f"{key}:"):
+                indent = lines[k][:len(lines[k]) - len(lines[k].lstrip())]
+                lines[k] = f"{indent}{key}: {val}"
+                seen.add(key)
+    if seen != set(want):
+        return False
+    path.write_text("\n".join(lines) + "\n")
+    return True
+
+
 def footprint_um(cfg: dict) -> float:
     """Diameter of the ablated crater."""
     spot = float(cfg.get("focal-spot-um", 10))
@@ -962,14 +990,88 @@ def draw_overlay(path: Path, beads: list[Bead], shots: list[Shot],
 
 
 
-# Confirmation sheets live beside the script, one file per run, named
-# by date and time so nothing is ever silently overwritten. This is a
-# double-check for the operator, not a pipeline input.
-REVIEW_DIR = HERE / "image confirmation"
+# Everything a command writes goes under outputs/, in its own folder
+# named for the command and the moment it ran. Re-running never
+# overwrites the previous answer, and the folder is a complete record
+# of one invocation rather than files from different runs mixed
+# together in the working directory.
+OUTPUT_ROOT = HERE / "outputs"
+
+
+def new_output_dir(command: str, cfg: dict, stamp: str) -> Path:
+    """
+    outputs/<command>_<date>_<time>/ , created.
+
+    Set output.per-run-folder false to write straight into outputs/
+    instead, which overwrites in place -- useful only if something
+    downstream expects a fixed path.
+    """
+    root = HERE / str((cfg.get("output") or {}).get("directory", "outputs"))
+    if not (cfg.get("output") or {}).get("per-run-folder", True):
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    slug = stamp.replace(" ", "_").replace(":", "")
+    out = root / f"{command}_{slug}"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def draw_review_overview(path: Path, beads: list[Bead], cfg: dict,
+                         scan: Path | None, stamp: str) -> bool:
+    """
+    The whole slide at a glance: which beads are targeted and which are
+    not. No shot pattern -- at slide scale a 30 um crater is a fraction
+    of a pixel, so drawing the angles here would be noise. The per-bead
+    panels carry the shot geometry; this answers the different question
+    of whether the selection covers the deposit you meant.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return False
+    if scan is None or not scan.exists():
+        return False
+    img = cv2.imread(str(scan), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return False
+
+    rv = cfg.get("review") or {}
+    long_edge = int(rv.get("overview-px", 2400))
+    sc = min(1.0, long_edge / max(img.shape[:2]))
+    vis = cv2.cvtColor(cv2.resize(img, None, fx=sc, fy=sc,
+                                  interpolation=cv2.INTER_AREA),
+                       cv2.COLOR_GRAY2BGR)
+    head = 64
+    vis = cv2.copyMakeBorder(vis, head, 0, 0, 0, cv2.BORDER_CONSTANT,
+                             value=(32, 32, 32))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    acc = [b for b in beads if b.accepted]
+    # Draw rejects first so a target is never hidden under one.
+    for b in beads:
+        if b.accepted:
+            continue
+        col = (180, 60, 140) if b.clumped else (0, 0, 225)
+        cv2.circle(vis, (int(b.x_px * sc), int(b.y_px * sc) + head), 2,
+                   col, -1)
+    for b in acc:
+        p = (int(b.x_px * sc), int(b.y_px * sc) + head)
+        r = max(int(b.diameter_px / 2 * sc), 4)
+        cv2.circle(vis, p, r + 5, (0, 220, 0), 2)
+
+    cv2.putText(vis, f"Targeted beads, whole slide   {stamp}", (10, 28),
+                font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(vis, f"green ring = targeted ({len(acc)})   "
+                     f"red dot = rejected   purple dot = clumped   "
+                     f"total objects {len(beads)}",
+                (10, 52), font, 0.5, (170, 170, 170), 1, cv2.LINE_AA)
+    cv2.imwrite(str(path), vis)
+    return True
 
 
 def draw_shot_review(beads: list[Bead], cfg: dict, T: Transform,
-                     scan: Path | None, stamp: str) -> list[Path]:
+                     scan: Path | None, stamp: str,
+                     outdir: Path) -> list[Path]:
     """
     One small panel per accepted bead, showing that bead and the shots
     around it with each shot labelled by its angle.
@@ -1007,7 +1109,7 @@ def draw_shot_review(beads: list[Bead], cfg: dict, T: Transform,
     crater_px = footprint_um(cfg) / T.um_per_px
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
     pages = [acc[i:i + per] for i in range(0, len(acc), per)]
     written = []
 
@@ -1081,7 +1183,7 @@ def draw_shot_review(beads: list[Bead], cfg: dict, T: Transform,
         # instrument PC and sorts chronologically in a directory listing.
         slug = stamp.replace(" ", "_").replace(":", "")
         suffix = f"_sheet{pno:02d}" if len(pages) > 1 else ""
-        out = REVIEW_DIR / f"shot_confirmation_{slug}{suffix}.png"
+        out = outdir / f"shot_confirmation_{slug}{suffix}.png"
         cv2.imwrite(str(out), sheet)
         written.append(out)
 
@@ -1701,15 +1803,21 @@ def save_manual(entries: list[tuple], path: Path = SELECTION_PATH) -> None:
             w.writerow([f"{x:.2f}", f"{y:.2f}", d])
 
 
-def apply_manual(beads: list[Bead], cfg: dict,
-                 path: Path = SELECTION_PATH) -> None:
-    entries = load_manual(path)
+def apply_override_entries(beads: list[Bead], entries: list[tuple],
+                           cfg: dict) -> tuple[int, int]:
+    """
+    Apply (x_px, y_px, decision) overrides by POSITION, returning
+    (matched, unmatched).
+
+    Split out of apply_manual so the select window can re-apply the
+    overrides made in the current session after re-running detection.
+    Those live on the bead objects and are not on disk until the window
+    closes, so re-reading the CSV would silently lose them.
+    """
     if not entries or not beads:
-        log("no manual overrides to apply")
-        return
+        return 0, 0
     tol = float(cfg.get("manual-selection", {}).get("match-radius-px", 12))
     tree = cKDTree(np.array([[b.x_px, b.y_px] for b in beads], float))
-
     hit = miss = 0
     for x, y, decision in entries:
         d, i = tree.query([x, y])
@@ -1722,6 +1830,17 @@ def apply_manual(beads: list[Bead], cfg: dict,
         b.manual = decision
         b.reject_reason = "" if b.accepted else "manually rejected"
         b.reject_category = "" if b.accepted else "manual"
+    return hit, miss
+
+
+def apply_manual(beads: list[Bead], cfg: dict,
+                 path: Path = SELECTION_PATH) -> None:
+    entries = load_manual(path)
+    if not entries or not beads:
+        log("no manual overrides to apply")
+        return
+    tol = float(cfg.get("manual-selection", {}).get("match-radius-px", 12))
+    hit, miss = apply_override_entries(beads, entries, cfg)
     say(f"  manual overrides applied            : {hit}"
         + (f"  ({miss} matched nothing within {tol:.0f} px)" if miss else ""))
 
@@ -1736,9 +1855,25 @@ def bead_manual_selection(cfg: dict) -> None:
       drag a box            select a region
       Accept box            accept every bead inside
       Reject box            reject every bead inside
+      Detect in box         run detection over just that rectangle and
+                            merge whatever it finds into the list
       Clear box             drop the region selection
       Reset                 discard all manual overrides
       close the window      write manual_selection.csv
+
+    'Detect in box' exists because detection only ever looks inside
+    detection.roi, so a bead deposit outside it is not missed by the
+    filters -- it is never examined at all, and shows as a blank patch
+    here. Rather than guess a wider ROI up front, draw a box round the
+    blank patch and detect into it.
+
+    Two consequences are handled rather than hidden. Every filter is
+    re-run over the UNION of old and new objects, because isolation is
+    a property of the whole list: appending to an already-filtered list
+    would leave the new objects invisible to their neighbours'
+    isolation test. And on close the ROI in laser_setup.yaml is widened
+    to cover the boxes, because otherwise 'run' would detect only the
+    original region and silently drop every override made outside it.
     """
     import matplotlib.pyplot as plt
     from matplotlib.widgets import RectangleSelector, Button
@@ -1754,6 +1889,7 @@ def bead_manual_selection(cfg: dict) -> None:
     T = transform_from_config(cfg)
     beads, scan = build_beads(cfg, T)
     auto = [b.accepted for b in beads]
+    extra = []          # boxes fed to 'Detect in box', in scan pixels
 
     img = None
     if scan:
@@ -1864,24 +2000,112 @@ def bead_manual_selection(cfg: dict) -> None:
         status.set_text("manual overrides reset")
         refresh()
 
+    def detect_in_box():
+        if img is None or scan is None:
+            status.set_text("no scan image loaded, so there is nothing "
+                            "to detect in")
+            fig.canvas.draw_idle()
+            return
+        if not box["rect"]:
+            status.set_text("draw a box first, then Detect in box")
+            fig.canvas.draw_idle()
+            return
+        h, w = img.shape[:2]
+        bx0, bx1, by0, by1 = box["rect"]
+        x0, x1 = max(0, int(bx0)), min(w, int(math.ceil(bx1)))
+        y0, y1 = max(0, int(by0)), min(h, int(math.ceil(by1)))
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            status.set_text("that box is too small to detect in")
+            fig.canvas.draw_idle()
+            return
+
+        status.set_text(f"detecting in {x1 - x0}x{y1 - y0} px box ...")
+        fig.canvas.draw_idle()
+        fig.canvas.flush_events()
+
+        sub = {**cfg, "detection": {**cfg["detection"],
+                                    "roi": {"x0": x0, "y0": y0,
+                                            "x1": x1, "y1": y1}}}
+        found = detect_blobs(scan, sub)
+
+        # The box usually overlaps ground already covered. A duplicate
+        # would not just double-count, it would sit on top of its own
+        # twin and make that bead fail isolation against itself.
+        dup = float(cfg.get("manual-selection", {})
+                    .get("redetect-duplicate-px", 10))
+        if beads and found:
+            tree = cKDTree(np.array([[b.x_px, b.y_px] for b in beads], float))
+            found = [b for b in found
+                     if tree.query([b.x_px, b.y_px])[0] > dup]
+        if not found:
+            status.set_text("no new objects in that box "
+                            "(everything there was already detected)")
+            fig.canvas.draw_idle()
+            return
+
+        # Overrides made this session are on the objects, not on disk.
+        session = [(b.x_px, b.y_px, b.manual) for b in beads if b.manual]
+
+        beads.extend(found)
+        for b in found:
+            c = Circle((b.x_px, b.y_px), max(b.diameter_px / 2, 4),
+                       fill=False, ec=colour(b), lw=1.3)
+            ax.add_patch(c)
+            patches.append(c)
+
+        # Re-run everything over the union, in the documented order.
+        to_stage(beads, T)
+        isolation_filter(beads, float(cfg["min-bead-separation"]))
+        shape_filter(beads, cfg)
+        auto[:] = [b.accepted for b in beads]     # new Reset baseline
+        hit, miss = apply_override_entries(beads, session, cfg)
+
+        extra.append((x0, y0, x1, y1))
+        note = f"detected {len(found)} new objects; re-filtered all {len(beads)}"
+        if miss:
+            note += f"  ({miss} override(s) lost)"
+        status.set_text(note)
+        say(note)
+        refresh()
+
     zin, zout, zfit = attach_zoom(fig, ax)
 
     keep = []
-    for x, w, lbl, fn in ((0.04, 0.12, "Accept box",
+    for x, w, lbl, fn in ((0.040, 0.105, "Accept box",
                            lambda: set_many("accept")),
-                          (0.17, 0.12, "Reject box",
+                          (0.150, 0.105, "Reject box",
                            lambda: set_many("reject")),
-                          (0.30, 0.11, "Clear box", clear_box),
-                          (0.42, 0.08, "Reset", reset_all),
-                          (0.53, 0.07, "Zoom +", zin),
-                          (0.61, 0.07, "Zoom -", zout),
-                          (0.69, 0.07, "Fit", zfit)):
+                          (0.260, 0.090, "Clear box", clear_box),
+                          (0.355, 0.120, "Detect in box", detect_in_box),
+                          (0.480, 0.070, "Reset", reset_all),
+                          (0.560, 0.060, "Zoom +", zin),
+                          (0.625, 0.060, "Zoom -", zout),
+                          (0.690, 0.055, "Fit", zfit)):
         btn = Button(fig.add_axes([x, 0.045, w, 0.045]), lbl)
         btn.on_clicked(lambda _ev, f=fn: f())
         keep.append(btn)
 
     refresh()
     plt.show()
+
+    if extra:
+        roi = cfg["detection"].get("roi") or {}
+        xs = [roi.get("x0", 0)] + [e[0] for e in extra]
+        ys = [roi.get("y0", 0)] + [e[1] for e in extra]
+        xe = [roi.get("x1", 0)] + [e[2] for e in extra]
+        ye = [roi.get("y1", 0)] + [e[3] for e in extra]
+        nx0, ny0, nx1, ny1 = min(xs), min(ys), max(xe), max(ye)
+        say(f"\nDetected in {len(extra)} extra box(es). 'run' only looks "
+            f"inside detection.roi, so it is widened to cover them:")
+        say(f"  roi: x0 {roi.get('x0')} -> {nx0}   y0 {roi.get('y0')} "
+            f"-> {ny0}   x1 {roi.get('x1')} -> {nx1}   y1 "
+            f"{roi.get('y1')} -> {ny1}")
+        if save_roi(nx0, ny0, nx1, ny1):
+            say(f"  written to {CONFIG_PATH.name}")
+        else:
+            say(f"  COULD NOT write it -- set detection.roi in "
+                f"{CONFIG_PATH.name} by hand to the values above, or "
+                f"'run' will discard the beads you picked out there.")
 
     entries = [(b.x_px, b.y_px, b.manual) for b in beads if b.manual]
     save_manual(entries)
@@ -1979,7 +2203,9 @@ def run(cfg: dict) -> None:
         print(f"      {n:5d}  {reason}")
     print(f"  written : {len(ordered)}")
 
-    prefix = HERE / cfg["output"]["prefix"]
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    outdir = new_output_dir("run", cfg, stamp)
+    prefix = outdir / cfg["output"]["prefix"]
     log(f"writing outputs with prefix {prefix}")
     csv_path = prefix.with_suffix(".csv")
     write_csv(csv_path, beads, ordered)
@@ -1997,6 +2223,9 @@ def run(cfg: dict) -> None:
         zp = prefix.with_name("shot_placement_zoom.png")
         if draw_zoom(zp, beads, cfg, T, scan):
             print(f"Wrote {zp.name}")
+
+    rel = outdir.relative_to(HERE) if outdir.is_relative_to(HERE) else outdir
+    print(f"  all of it under {rel}/")
 
     if cfg["output"].get("write-xeo", False):
         M = fit_mtp(cfg)
@@ -2273,13 +2502,22 @@ def review(cfg: dict) -> None:
           f"({total - kept} dropped)")
 
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log("rendering confirmation sheets")
-    pages = draw_shot_review(beads, cfg, T, scan, stamp)
-    if not pages:
-        print("Could not render the sheets (is opencv-python installed?).")
+    outdir = new_output_dir("review", cfg, stamp)
+
+    log("rendering whole-slide overview")
+    over = outdir / "slide_overview.png"
+    have_over = draw_review_overview(over, beads, cfg, scan, stamp)
+
+    log("rendering per-bead confirmation sheets")
+    pages = draw_shot_review(beads, cfg, T, scan, stamp, outdir)
+    if not pages and not have_over:
+        print("Could not render anything (is opencv-python installed?).")
         return
 
-    print(f"\nWrote {len(pages)} sheet(s) to {REVIEW_DIR.name}/")
+    rel = outdir.relative_to(HERE) if outdir.is_relative_to(HERE) else outdir
+    print(f"\nWrote {rel}/")
+    if have_over:
+        print(f"  {over.name}   whole slide, targeted vs not")
     for p in pages:
         print(f"  {p.name}")
 

@@ -118,6 +118,22 @@ It also preloads the existing set, so it reports how many it loaded and
 runs `registration_sanity` on them before the operator adds more -- a
 stale set silently mixed with fresh picks is a bug that has shipped once.
 
+**Commands write into `outputs/<command>_<stamp>/`.** `new_output_dir`
+makes it. Nothing writes into the working directory any more, and a
+re-run never overwrites the previous answer. `review` writes two
+different things on purpose: `slide_overview.png` answers whether the
+selection covers the right deposit, and the per-bead sheets answer
+whether each bead's shots landed sensibly. Do not add shot angles to the
+overview -- at slide scale the crater is sub-pixel and the marks would
+be noise.
+
+**`Detect in box` re-runs every filter over the union.** Isolation is a
+property of the whole object list, so appending newly found objects to
+an already-filtered list would leave them invisible to their
+neighbours' isolation test. It also widens `detection.roi` on close via
+`save_roi`, because `run` only looks inside the ROI and would otherwise
+silently discard every override made outside it.
+
 **Apply edits once.** Two regressions in this file came from patch scripts that
 double-applied or spliced across a region boundary, deleting whole functions
 while leaving valid syntax. When editing programmatically, assert each anchor

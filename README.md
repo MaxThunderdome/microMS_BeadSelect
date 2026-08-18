@@ -218,17 +218,27 @@ the path `run` uses — detection, all the filters, your
 `manual_selection.csv` overrides, shot placement — but writes only
 pictures, never a target list. Nothing it does can change `targets.csv`.
 
-Output goes to `image confirmation/`, one PNG per run, named by date and
-time so a sheet is never overwritten and you can tell which selection it
-came from:
+Output goes to its own timestamped folder, so a re-run never overwrites
+the previous answer:
 
 ```
-image confirmation/shot_confirmation_2026-08-17_170743.png
+outputs/review_2026-08-17_175717/
+    slide_overview.png                      whole slide, targeted vs not
+    shot_confirmation_..._sheet01.png       per-bead panels
+    shot_confirmation_..._sheet02.png
 ```
 
-Each accepted bead gets its own panel: the bead ringed green, its shots
-labelled by angle, and a caption giving the bead index, measured
-diameter, nearest-neighbour distance and how many shots survived.
+`slide_overview.png` answers "does my selection cover the deposit I
+meant?" — every targeted bead ringed green across the whole slide, with
+rejects as red dots and clumps as purple. It carries no shot pattern on
+purpose: at slide scale a 30 µm crater is a fraction of a pixel, so the
+angles would be noise.
+
+The confirmation sheets answer the different question of whether each
+bead's shots landed sensibly. Each accepted bead gets its own panel: the
+bead ringed green, its shots labelled by angle, and a caption giving the
+bead index, measured diameter, nearest-neighbour distance and how many
+shots survived.
 
     filled blue     this shot will fire
     hollow orange   this shot was dropped
@@ -246,8 +256,23 @@ caption close to `bead-diameter`. A caption reading `24um` when you
 loaded 90 um beads means the registration scale is wrong — go back to
 `check`.
 
-Panel size, magnification, columns and page size are the `review:` block
-in `laser_setup.yaml`.
+Overview size, panel size, magnification, columns and page size are the
+`review:` block in `laser_setup.yaml`.
+
+## Where output goes
+
+Every command that writes files puts them under `outputs/`, in a folder
+named for the command and the moment it ran:
+
+```
+outputs/run_2026-08-17_175711/     targets.csv, targets_overlay.png, ...
+outputs/review_2026-08-17_175717/  slide_overview.png, confirmation sheets
+```
+
+Nothing is overwritten by a re-run, and each folder is a complete record
+of one invocation rather than files from different runs mixed together.
+Set `output.per-run-folder: false` to write straight into `outputs/` and
+overwrite in place. `outputs/` is gitignored — regenerate it any time.
 
 ## 7. `python microMS_beadtargeting.py run`
 

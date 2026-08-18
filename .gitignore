@@ -18,8 +18,8 @@ targets.csv
 targets*.xeo
 targets_overlay.png
 shot_placement_zoom.png
-# Confirmation sheets from "review" -- regenerate any time.
-image confirmation/
+# Everything the commands write -- regenerate any time.
+outputs/
 
 # Operator state. Uncomment to share a slide's hand-picked selection
 # with a collaborator; by default it is machine- and scan-specific.
