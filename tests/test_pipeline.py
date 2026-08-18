@@ -481,6 +481,78 @@ def test_review_writes_nothing_without_accepted_beads(cfg, transform, tmp_path):
         M.REVIEW_DIR = old
 
 
+def _gui_backend():
+    """Name of an importable interactive backend, or None."""
+    for mod, name in (("PyQt5", "QtAgg"), ("PySide6", "QtAgg"),
+                      ("tkinter", "TkAgg")):
+        try:
+            __import__(mod)
+            return name
+        except ImportError:
+            continue
+    return None
+
+
+def test_max_fiducials_is_a_ceiling_not_a_target(cfg):
+    """
+    3 is the MINIMUM for a similarity fit, not the goal: with exactly 3
+    there is no spare point, so leave-one-out cannot run. The shipped
+    ceiling must leave room to go past 3.
+    """
+    assert cfg["max-fiducials"] >= 4
+    src = np.array([[0, 0], [2000, 0], [0, 1500], [2000, 1500]], float)
+    dst = src * 9.74
+    assert M.loo_residuals(src[:3], dst[:3]) is None      # 3 -> no estimate
+    assert M.loo_residuals(src, dst) is not None          # 4 -> real one
+
+
+@pytest.mark.skipif(
+    not _gui_backend(), reason="fiducial picker needs a GUI backend")
+def test_picker_stops_at_max_fiducials(cfg, tmp_path, monkeypatch):
+    """Drives the real picker; the Add button must refuse past the cap."""
+    import matplotlib
+    matplotlib.use(_gui_backend(), force=True)
+    import matplotlib.pyplot as plt
+    import matplotlib.widgets as W
+    from matplotlib.backend_bases import MouseEvent
+    import cv2
+
+    scan = tmp_path / "scan.png"
+    cv2.imwrite(str(scan), np.full((800, 900), 200, np.uint8))
+
+    seen = {"buttons": [], "boxes": []}
+    B, T = W.Button, W.TextBox
+    monkeypatch.setattr(W, "Button", lambda ax, label, **k: (
+        seen["buttons"].append(B(ax, label, **k)) or seen["buttons"][-1]))
+    monkeypatch.setattr(W, "TextBox", lambda ax, label, **k: (
+        seen["boxes"].append(T(ax, label, **k)) or seen["boxes"][-1]))
+    monkeypatch.setattr(plt, "show", lambda *a, **k: None)
+    monkeypatch.setattr(M, "save_fiducials", lambda f, **k: None)
+
+    c = dict(cfg)
+    c["fiducials"] = []
+    c["max-fiducials"] = 5
+    c["input"] = dict(c["input"])
+    c["input"]["scan"] = str(scan)
+    M.pick_fiducials(c)
+
+    add_btn, bx, by = seen["buttons"][0], seen["boxes"][0], seen["boxes"][1]
+    fig = add_btn.ax.figure
+    img_ax = fig.axes[0]
+    for i in range(8):
+        x, y = 100 + (i % 4) * 150, 100 + (i // 4) * 200
+        ev = MouseEvent("button_press_event", fig.canvas, 0, 0, button=3)
+        ev.inaxes = img_ax
+        ev.xdata, ev.ydata = float(x), float(y)
+        fig.canvas.callbacks.process("button_press_event", ev)
+        bx.set_val(str(x * 9.74))
+        by.set_val(str(y * 9.74))
+        add_btn._observers.process("clicked", None)
+
+    assert add_btn.label.get_text().endswith("5/5")
+    plt.close("all")
+
+
 def test_zoom_about_cursor_keeps_point_fixed():
     matplotlib = pytest.importorskip("matplotlib")
     matplotlib.use("Agg")

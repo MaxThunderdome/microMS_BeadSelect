@@ -109,6 +109,14 @@ allow-reflection: true
 # Warn if any fiducial lands further than this from its fitted position.
 max-fiducial-residual-um: 25
 
+# How many fiducials the picker will accept. THREE IS THE MINIMUM for a
+# similarity fit, not the target: with exactly 3 there is no spare point
+# to hold back, so leave-one-out cannot run and the residual you are
+# shown is in-sample and flatters the fit. Pick 4 or more whenever the
+# slide has enough recognisable marks, and spread them out -- see
+# min-fiducial-spread above.
+max-fiducials: 10
+
 # Guard against a fiducial set that was never picked off this scan.
 # A similarity transform has 4 degrees of freedom and 3 fiducials give
 # 6 equations, so the fit is overdetermined and genuine clicks ALWAYS
@@ -133,14 +141,14 @@ fiducials:
     y_px: 3300.00
     x_um: 3896.00
     y_um: 32142.00
-  - x_px: 254.11
-    y_px: 4232.71
-    x_um: 254.00
-    y_um: 4233.00
   - x_px: 9626.07
     y_px: 7372.46
     x_um: 9626.00
     y_um: 7372.00
+  - x_px: 256.01
+    y_px: 4231.69
+    x_um: 12321.00
+    y_um: 12321.00
 
 
 # ---------------------------------------------------------------------

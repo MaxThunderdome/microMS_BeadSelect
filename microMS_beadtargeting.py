@@ -1167,11 +1167,24 @@ def pick_fiducials(cfg: dict) -> None:
 
         right-click on the image   set the pending pixel
         type stage x / stage y     into the boxes at the bottom
-        Add fiducial               commit the pair
+        Add fiducial               commit the pair, repeatedly, up to
+                                   max-fiducials (10 by default)
         Remove nearest             delete the fiducial nearest the
                                    last right-click
         Reset                      clear the list
         close the window           write laser_setup.yaml
+
+    Three fiducials is the minimum for a similarity fit. FOUR OR MORE
+    is what you actually want: leave-one-out cross validation needs a
+    spare point, and without it the reported residual is in-sample and
+    flatters the fit. The button label carries the running count so the
+    minimum is not mistaken for a maximum.
+
+    The list is PRELOADED from laser_setup.yaml so a session can be
+    resumed. That is also a trap -- picking three fresh marks on top of
+    a stale set silently mixes them -- so the picker says how many it
+    loaded and runs the same sanity checks 'check' does before you
+    start adding.
 
     Coordinate entry is IN THE WINDOW, not the terminal. An earlier
     version prompted with input() from inside the click callback,
@@ -1207,7 +1220,10 @@ def pick_fiducials(cfg: dict) -> None:
                  f"  python microMS_beadtargeting.py convert <file>")
 
     fids: list[dict] = list(cfg.get("fiducials") or [])
+    preloaded = len(fids)
+    max_f = int(cfg.get("max-fiducials", 10))
     pending = {"px": None}
+    btn = {}                      # filled in once the buttons exist
 
     fig = plt.figure(figsize=(14, 10))
     ax = fig.add_axes([0.05, 0.16, 0.92, 0.79])
@@ -1217,17 +1233,23 @@ def pick_fiducials(cfg: dict) -> None:
         for art in list(ax.lines) + list(ax.texts):
             art.remove()
         worst = -1
-        title = f"{len(fids)} fiducials  (3 needed)"
+        hint = ("3 minimum" if len(fids) < 3 else
+                "add a 4th to enable leave-one-out" if len(fids) == 3 else
+                "leave-one-out active")
+        title = f"{len(fids)} of up to {max_f} fiducials  ({hint})"
+        if "add" in btn:
+            btn["add"].label.set_text(f"Add fiducial  {len(fids)}/{max_f}")
         if len(fids) >= 3:
             src = np.array([[f["x_px"], f["y_px"]] for f in fids], float)
             dst = np.array([[f["x_um"], f["y_um"]] for f in fids], float)
             T = fit_similarity(src, dst, cfg.get("allow-reflection", True))
             res = residuals(T, src, dst)
             worst = int(np.argmax(res))
-            title = (f"{len(fids)} fiducials | RMS "
+            title = (f"{len(fids)}/{max_f} | RMS "
                      f"{np.sqrt((res ** 2).mean()):.1f} um | worst "
                      f"{res[worst]:.1f} um | {T.um_per_px:.3f} um/px"
-                     + (" | REFLECTED" if T.reflected else ""))
+                     + (" | REFLECTED" if T.reflected else "")
+                     + ("" if len(fids) >= 4 else "  (in-sample only)"))
         for i, f in enumerate(fids):
             c = "red" if i == worst else "lime"
             ax.plot(f["x_px"], f["y_px"], "+", ms=16, mew=2, color=c)
@@ -1259,6 +1281,11 @@ def pick_fiducials(cfg: dict) -> None:
              fontsize=9, color="#555555")
 
     def add(_ev=None):
+        if len(fids) >= max_f:
+            status.set_text(f"already at max-fiducials ({max_f}) -- remove "
+                            f"one, or raise it in laser_setup.yaml")
+            fig.canvas.draw_idle()
+            return
         if pending["px"] is None:
             status.set_text("right-click a fiducial on the image first")
             fig.canvas.draw_idle()
@@ -1274,7 +1301,10 @@ def pick_fiducials(cfg: dict) -> None:
         pending["px"] = None
         bx.set_val("")
         by.set_val("")
-        status.set_text(f"added fiducial {len(fids) - 1}")
+        status.set_text(f"added fiducial {len(fids) - 1}"
+                        f"   ({len(fids)}/{max_f}"
+                        + (", 4+ enables leave-one-out)"
+                           if len(fids) < 4 else ")"))
         redraw()
 
     def remove(_ev=None):
@@ -1305,6 +1335,7 @@ def pick_fiducials(cfg: dict) -> None:
             Button(fig.add_axes([0.755, 0.06, 0.058, 0.045]), "Zoom +"),
             Button(fig.add_axes([0.818, 0.06, 0.058, 0.045]), "Zoom -"),
             Button(fig.add_axes([0.881, 0.06, 0.058, 0.045]), "Fit")]
+    btn["add"] = keep[0]
     keep[0].on_clicked(add)
     keep[1].on_clicked(remove)
     keep[2].on_clicked(reset)
@@ -1315,6 +1346,22 @@ def pick_fiducials(cfg: dict) -> None:
     # Enter in either box commits, so the whole entry is keyboard-only.
     bx.on_submit(lambda _t: by.set_val(by.text) or None)
     by.on_submit(lambda _t: add())
+
+    if preloaded:
+        msg = (f"loaded {preloaded} existing fiducial(s) from "
+               f"{CONFIG_PATH.name} -- press Reset to start fresh")
+        if preloaded >= 3:
+            src = np.array([[f["x_px"], f["y_px"]] for f in fids], float)
+            dst = np.array([[f["x_um"], f["y_um"]] for f in fids], float)
+            T0 = fit_similarity(src, dst, cfg.get("allow-reflection", True))
+            r0 = residuals(T0, src, dst)
+            if registration_sanity(src, dst, r0, cfg):
+                msg = (f"loaded {preloaded} SUSPECT fiducial(s) from "
+                       f"{CONFIG_PATH.name} -- see the terminal; "
+                       f"press Reset to start fresh")
+            for note in registration_sanity(src, dst, r0, cfg):
+                print(f"WARNING: {note}")
+        status.set_text(msg)
 
     redraw()
     plt.show()

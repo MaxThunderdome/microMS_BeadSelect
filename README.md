@@ -111,12 +111,28 @@ Opens the scan. Coordinate entry is **in the window**, not the terminal.
 |---|---|
 | right-click on the image | set the pending pixel (gold X) |
 | type into stage x / stage y | the measured stage reading |
-| **Add fiducial** | commit the pair |
+| **Add fiducial** | commit the pair — press it repeatedly, the label shows `n/10` |
 | **Remove nearest** | delete the fiducial nearest the last right-click |
 | **Reset** | clear the list |
 | close the window | write into `laser_setup.yaml` |
 
 Enter in the stage y box also commits, so entry can be keyboard-only.
+
+**How many to pick.** Three is the *minimum* for a similarity fit, not the
+target. With exactly three there is no spare point to hold back, so
+leave-one-out cross validation cannot run and the residual you are shown is
+in-sample — it flatters the fit and tells you almost nothing. **Pick four or
+more** whenever the slide has enough recognisable marks, and spread them across
+the slide rather than along one edge; three marks in a line leave rotation and
+scale poorly determined even when the residual looks small. The ceiling is
+`max-fiducials` in the YAML, 10 by default, and the Add button carries the
+running count so the minimum is not mistaken for a maximum.
+
+**The list is preloaded** from `laser_setup.yaml` so a session can be resumed —
+which is also a trap, because picking fresh marks on top of a stale set mixes
+the two silently. The picker now says how many it loaded, and runs the same
+sanity checks `check` does before you start. If they are stale, press
+**Reset**.
 
 Both interactive windows zoom the same way:
 
