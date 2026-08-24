@@ -26,14 +26,14 @@ the source, you have introduced a bug. Read it from config with a sensible
 default and document it in the YAML with a comment saying what it does and
 when to change it.
 
-**Never guess a physical constant.** Four values are unmeasured and must stay
+**Never guess a physical constant.** These values are unmeasured and must stay
 flagged as such until someone reads them off the instrument:
 
 | value | status |
 |---|---|
 | `focal-spot-um: 10` | placeholder |
 | `beam-scan-um: 20` | placeholder |
-| `.xeo` `PlateTypeName` header | unverified against a real fleX export |
+| adapter origin (`name-coordinates.x0-um` / `y0-um`) | unmeasured |
 | `mtp_calibration` | empty; must be measured per instrument |
 
 If asked to "just pick a reasonable default" for any of these, decline and
@@ -46,6 +46,11 @@ nearest-neighbour filter and click-training interaction follow microMS
 copyright with no explicit licence, so behaviour is **reimplemented
 independently**. Only `.xeo` format constants are reproduced verbatim, and they
 are marked `FORMAT SPEC` in the source. Do not copy microMS source.
+
+**Position names carry coordinates.** `R<region>X<x>Y<y>` encodes physical
+adapter position in 10 µm units on both axes, confirmed by geometry against a
+real run file — not sequence numbers. The `.run` and `.xeo` are matched by name
+alone, so `position_name` is shared by both writers and must stay that way.
 
 ## Invariants that look like bugs but are not
 

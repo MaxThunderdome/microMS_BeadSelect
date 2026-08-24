@@ -206,9 +206,24 @@ supplied by Dr. Neumann) confirms:
   *names* plus acquisition settings, and resolves coordinates through
   `geometry="<stem>"` → `<stem>.xeo`. So a targeting run needs **both** files,
   written together, with names matching exactly.
-- Position naming: `R<region:02d>X<x>Y<y>`, integers stepping by 1. In that file
-  they are raster indices of an imaging acquisition — not microns, not plate
-  fractions.
+- Position naming: `R<region:02d>X<x>Y<y>`, where **X and Y are physical
+  adapter coordinates in whole units**, not sequence numbers. One unit is
+  10 µm, the same on both axes. The evidence:
+
+  | observation | at 10 µm/unit | matches |
+  |---|---|---|
+  | two Y bands 2623 units apart | 26.2 mm | slide pitch on a 2-slide adapter |
+  | X spans 5294 units | 52.9 mm | tissue inboard of a 75 mm slide |
+  | each region 448 × 295 units | 4.48 × 2.95 mm | a mouse kidney section |
+  | `sampleName` = `kidneyslides34` | slides 3 and 4 | the two Y bands, holding 3 and 4 regions |
+
+  The scale is inferred from geometry, not documented. Confirm against a real
+  `.xeo` before acquiring.
+
+- **Both axes share one scale.** This settles the anisotropy question raised in
+  §3 of the MTP notes: a uniform-scale similarity fit is the right model for
+  stage µm → adapter units, and the residual warning should stay quiet on real
+  data.
 - The matching geometry is named `Imaging_Run`, so **`Imaging_Run.xeo` exists in
   the same folder on her machine.** That is the single file still needed.
 

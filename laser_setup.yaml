@@ -221,6 +221,27 @@ output:
   region: 0
   chip: 0
 
+  # X and Y in a position name are PHYSICAL ADAPTER COORDINATES, in
+  # whole units -- not sequence numbers. From the reference run file
+  # one unit is 10 um, on both axes:
+  #
+  #   two slide bands 2623 units apart  -> 26.2 mm slide pitch
+  #   X span 5294 units across 2 slides -> 52.9 mm inside a 75 mm slide
+  #   region 448 x 295 units            -> 4.48 x 2.95 mm kidney section
+  #
+  # Turn this on and the names carry the coordinates the way the
+  # instrument's own files do. It needs the adapter origin: the stage
+  # reading at adapter (0,0). Measure it once -- drive to a known
+  # named position, read the stage, subtract. Until then the writer
+  # refuses rather than emitting names that point somewhere wrong.
+  name-coordinates:
+    enabled: false
+    unit-um: 10       # inferred from the reference run, not documented
+    x0-um: null       # stage um at adapter X=0  -- MEASURE
+    y0-um: null       # stage um at adapter Y=0  -- MEASURE
+    flip-x: false
+    flip-y: false
+
   # Copied verbatim into the .run header. Everything not listed here
   # is taken from the reference file; see RUN_ATTRS_DEFAULT.
   #

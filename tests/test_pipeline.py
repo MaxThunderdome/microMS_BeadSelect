@@ -403,3 +403,42 @@ def test_run_uses_crlf_like_the_reference_file(cfg, tmp_path):
 def test_position_name_pattern_is_configurable(cfg):
     cfg["output"]["position-name"] = "B{bead:04d}_A{angle:03d}"
     assert M.position_name(cfg, 0, M.Shot(29, 90, 0, 0)) == "B0029_A090"
+
+
+# ---------------------------------------------------------------------
+# coordinate-encoded position names
+# ---------------------------------------------------------------------
+
+def test_names_encode_adapter_coordinates(cfg):
+    """X and Y in a position name are physical, not sequential."""
+    cfg["output"]["name-coordinates"] = {
+        "enabled": True, "unit-um": 10, "x0-um": 0.0, "y0-um": 0.0,
+        "flip-x": False, "flip-y": False}
+    shot = M.Shot(0, 0, 44870.0, 44240.0)      # 10 um units -> 4487, 4424
+    assert M.position_name(cfg, 0, shot) == "R00X4487Y4424"
+
+
+def test_adapter_origin_offsets_the_name(cfg):
+    cfg["output"]["name-coordinates"] = {
+        "enabled": True, "unit-um": 10, "x0-um": 1000.0, "y0-um": 2000.0,
+        "flip-x": False, "flip-y": False}
+    assert M.stage_to_adapter(cfg, 44870.0, 44240.0) == (4387, 4224)
+
+
+def test_axis_flip_is_supported(cfg):
+    cfg["output"]["name-coordinates"] = {
+        "enabled": True, "unit-um": 10, "x0-um": 0.0, "y0-um": 0.0,
+        "flip-x": False, "flip-y": True}
+    assert M.stage_to_adapter(cfg, 1000.0, 1000.0) == (100, -100)
+
+
+def test_missing_adapter_origin_refuses(cfg):
+    """A guessed origin writes names that fire somewhere else."""
+    cfg["output"]["name-coordinates"] = {"enabled": True, "unit-um": 10}
+    with pytest.raises(SystemExit):
+        M.stage_to_adapter(cfg, 1000.0, 1000.0)
+
+
+def test_sequential_naming_still_available(cfg):
+    cfg["output"]["name-coordinates"] = {"enabled": False}
+    assert M.position_name(cfg, 0, M.Shot(0, 0, 999.0, 999.0)) == "R00X1Y1"

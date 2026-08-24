@@ -901,9 +901,22 @@ def read_xeo(path: Path) -> list[str]:
 # two files are therefore written together, and `geometry` must equal
 # the .xeo filename stem or autoXecute cannot resolve a single point.
 #
-# Observed naming: R<region:02d>X<x>Y<y>, x and y whole numbers
-# stepping by 1. In the reference file those are raster indices of an
-# imaging run -- not microns, not plate fractions.
+# Naming: R<region:02d>X<x>Y<y>. X and Y are PHYSICAL COORDINATES on
+# the adapter, in whole units, not raster indices. Evidence from the
+# reference file:
+#
+#   - Y falls into two bands 2623 units apart. A two-slide adapter
+#     puts slide centres ~26 mm apart. At 10 um/unit that is 26.2 mm.
+#   - X spans 5294 units across both slides. At 10 um/unit that is
+#     52.9 mm, sitting inboard of a 75 mm slide.
+#   - Each region is 448 x 295 units. At 10 um/unit that is
+#     4.48 x 2.95 mm, the size of a mouse kidney section.
+#   - sampleName is kidneyslides34 -- slides 3 and 4 -- and the two Y
+#     bands hold 3 and 4 regions respectively.
+#
+# So one unit is 10 um and BOTH AXES SHARE THAT SCALE. The scale is
+# inferred, not documented; confirm it against a real .xeo before an
+# acquisition run.
 # =====================================================================
 
 RUN_ATTRS_DEFAULT = {
@@ -935,6 +948,38 @@ def _xml_escape(v: str) -> str:
              .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+def stage_to_adapter(cfg: dict, x_um: float, y_um: float) -> tuple[int, int]:
+    """
+    Stage microns -> whole adapter units, as they appear in a position
+    name.
+
+    Requires the adapter origin, which is the stage reading at adapter
+    (0, 0). That is one measurement on the instrument: drive to a
+    known named position, read the stage, and subtract.
+
+    The scale itself is not fitted -- the reference run file pins it
+    at 10 um per unit on both axes.
+    """
+    nc = cfg["output"].get("name-coordinates") or {}
+    unit = float(nc.get("unit-um", 10))
+    x0, y0 = nc.get("x0-um"), nc.get("y0-um")
+    if x0 is None or y0 is None:
+        sys.exit(
+            "output.name-coordinates is enabled but the adapter origin is "
+            "not set.\n"
+            "  X and Y in a position name are physical adapter coordinates, "
+            "so a name\n"
+            "  cannot be written without knowing where adapter (0,0) sits in "
+            "stage um.\n"
+            "  Drive to a known named position, read the stage, and set "
+            "x0-um / y0-um.")
+
+    sx = -1.0 if nc.get("flip-x", False) else 1.0
+    sy = -1.0 if nc.get("flip-y", False) else 1.0
+    return (int(round(sx * (x_um - float(x0)) / unit)),
+            int(round(sy * (y_um - float(y0)) / unit)))
+
+
 def position_name(cfg: dict, index: int, shot) -> str:
     """
     Name for one position, shared by the .xeo and the .run.
@@ -944,9 +989,20 @@ def position_name(cfg: dict, index: int, shot) -> str:
     seen in the reference run file.
     """
     out = cfg["output"]
+    nc = out.get("name-coordinates") or {}
+
+    if nc.get("enabled", False):
+        # X and Y carry the position, exactly as the instrument's own
+        # run file does.
+        i, j = stage_to_adapter(cfg, shot.x_um, shot.y_um)
+    else:
+        # Sequential placeholders. Fine only if the paired .xeo
+        # supplies the coordinates and nothing else parses the name.
+        i, j = index + 1, 1
+
     pattern = out.get("position-name", "R{region:02d}X{i}Y{j}")
     return pattern.format(region=out.get("region", 0),
-                          i=index + 1, j=1, n=index + 1,
+                          i=i, j=j, n=index + 1,
                           bead=shot.bead_id, angle=int(shot.angle_deg))
 
 
