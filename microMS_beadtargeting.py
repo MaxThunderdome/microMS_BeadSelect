@@ -272,6 +272,40 @@ def transform_from_config(cfg: dict) -> Transform:
     return fit_similarity(src, dst, cfg.get("allow-reflection", True))
 
 
+def check_fiducial_geometry(src: np.ndarray, tol: float = 0.05) -> list[str]:
+    """
+    Catch fiducial layouts that fit perfectly and register badly.
+
+    A least-squares fit reports the residual of the points it was
+    given, so a degenerate arrangement produces RMS 0 and looks
+    ideal. Duplicated marks collapse the fit to scale 1.0; collinear
+    marks leave the direction perpendicular to the line
+    unconstrained, so any error there is invisible and uncorrected.
+
+    The guide's advice is to surround the target area with fiducials.
+    """
+    warn = []
+    n = len(src)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if np.linalg.norm(src[i] - src[j]) < 1.0:
+                warn.append(f"fiducials {i} and {j} are at the same pixel "
+                            f"-- the fit collapses and reports RMS 0")
+
+    if n >= 3:
+        centred = src - src.mean(0)
+        sv = np.linalg.svd(centred, compute_uv=False)
+        ratio = sv[1] / sv[0] if sv[0] > 0 else 0.0
+        if ratio < tol:
+            warn.append(
+                f"fiducials are nearly collinear (spread ratio "
+                f"{ratio:.4f}). The residual is meaningless "
+                f"perpendicular to that line; spread them across the "
+                f"slide instead")
+    return warn
+
+
 def report_registration(cfg: dict) -> Transform:
     fids = cfg["fiducials"]
     src = np.array([[f["x_px"], f["y_px"]] for f in fids], float)
@@ -302,6 +336,9 @@ def report_registration(cfg: dict) -> Transform:
     else:
         print(f"\nLeave-one-out  : RMS {np.sqrt((loo ** 2).mean()):.2f} um, "
               f"max {loo.max():.2f} um")
+
+    for w in check_fiducial_geometry(src):
+        print(f"\nWARNING: {w}")
 
     if res.max() > limit:
         print(f"\nWARNING: a fiducial exceeds max-fiducial-residual-um "
@@ -670,8 +707,12 @@ def place_shots(beads: list[Bead], cfg: dict) -> list[Shot]:
 
             elif enforce and tree is not None:
                 # nearest OTHER object, whether or not it was accepted
+                # cKDTree pads missing neighbours with distance inf and
+                # index == len(points), which is out of range. With a
+                # single detected object k=2 always returns one such
+                # pad, so this must be checked before indexing.
                 for d, j in zip(*tree.query([s.x_um, s.y_um], k=2)):
-                    if j == i:
+                    if j == i or j >= len(beads) or not math.isfinite(d):
                         continue
                     edge = beads[j].diameter_um / 2.0
                     if d - crater / 2.0 < edge:

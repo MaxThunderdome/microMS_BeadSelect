@@ -308,3 +308,51 @@ def test_zoom_about_cursor_keeps_point_fixed():
     fit()
     assert ax.get_xlim() == pytest.approx(home)
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------
+# degenerate inputs
+# ---------------------------------------------------------------------
+
+def test_single_detected_object_does_not_crash(cfg, transform):
+    """cKDTree pads a missing neighbour with index == len(points),
+    which is out of range. One detected object always triggers it."""
+    beads = [M.Bead(1000, 1200, 8.2)]
+    M.to_stage(beads, transform)
+    M.isolation_filter(beads, cfg["min-bead-separation"])
+    M.shape_filter(beads, cfg)
+    assert beads[0].accepted
+
+    shots = M.place_shots(beads, cfg)
+    assert len(shots) == len(cfg["laser-shot-angles"])
+    assert not any(s.dropped for s in shots)
+
+
+def test_empty_bead_list_is_survivable(cfg, transform, tmp_path):
+    M.to_stage([], transform)
+    M.isolation_filter([], cfg["min-bead-separation"])
+    M.shape_filter([], cfg)
+    assert M.place_shots([], cfg) == []
+    assert M.serpentine([], []) == []
+    M.write_csv(tmp_path / "empty.csv", [], [])
+
+
+def test_duplicate_fiducials_are_flagged():
+    """The fit collapses to scale 1.0 and still reports RMS 0."""
+    src = np.array([[0., 0.], [0., 0.], [2000., 1500.]])
+    warn = M.check_fiducial_geometry(src)
+    assert any("same pixel" in w for w in warn)
+
+
+def test_collinear_fiducials_are_flagged():
+    """Zero residual, but nothing constrains the perpendicular
+    direction."""
+    src = np.array([[0., 0.], [1000., 0.], [2000., 0.]])
+    T = M.fit_similarity(src, src * 9.74)
+    assert M.residuals(T, src, src * 9.74).max() < 1e-9   # looks perfect
+    assert any("collinear" in w for w in M.check_fiducial_geometry(src))
+
+
+def test_well_spread_fiducials_are_not_flagged():
+    src = np.array([[0., 0.], [2000., 0.], [0., 1500.]])
+    assert M.check_fiducial_geometry(src) == []

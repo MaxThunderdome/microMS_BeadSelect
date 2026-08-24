@@ -101,6 +101,16 @@ distance transform per component, making detection O(n × image) — 172 s on an
 8000 px scan. It crops to each component's bounding box first: 1.5 s. Keep it
 that way.
 
+**cKDTree pads missing neighbours out of range.** `query(k=2)` on a tree with
+one point returns index `len(points)` with distance `inf`. Any `k`-nearest
+query must check the index bound and `isfinite` before indexing. A single
+detected object hit this and crashed `run`.
+
+**A least-squares residual cannot see a degenerate layout.** Duplicated or
+collinear fiducials fit perfectly and report RMS 0 while registering badly.
+`check_fiducial_geometry` catches both; do not treat a low residual alone as
+proof of a good registration.
+
 **Apply edits once.** Two regressions in this file came from patch scripts that
 double-applied or spliced across a region boundary, deleting whole functions
 while leaving valid syntax. When editing programmatically, assert each anchor
