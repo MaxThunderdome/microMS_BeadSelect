@@ -460,11 +460,41 @@ def test_axis_flip_is_supported(cfg):
     assert M.stage_to_adapter(cfg, 1000.0, 1000.0) == (100, -100)
 
 
-def test_missing_adapter_origin_refuses(cfg):
-    """A guessed origin writes names that fire somewhere else."""
+def test_missing_origin_defaults_to_stage_origin(cfg):
+    """None means the stage and adapter origins are assumed to
+    coincide. `run` prints the resulting coordinate range beside the
+    reference file's, so a wrong origin shows up there rather than
+    blocking the export."""
     cfg["output"]["name-coordinates"] = {"enabled": True, "unit-um": 10}
-    with pytest.raises(SystemExit):
-        M.stage_to_adapter(cfg, 1000.0, 1000.0)
+    assert M.stage_to_adapter(cfg, 1000.0, 2000.0) == (100, 200)
+
+
+def test_xeo_writes_without_mtp_calibration(cfg, tmp_path):
+    """The .xeo used to be gated behind three measured MTP positions
+    nobody had, so it never got written."""
+    cfg["mtp_calibration"] = []
+    assert M.fit_mtp(cfg) is None
+
+    shots = [M.Shot(0, a, 44870.0 + a, 44240.0) for a in (0, 90, 180, 270)]
+    files = M.write_xeo(tmp_path / "t", shots, [], cfg, None)
+    assert len(files) == 1
+    assert len(M.read_xeo(files[0])) == 4
+
+    coords, mode = M.xeo_coords(cfg, shots, None)
+    assert mode == "adapter"
+    assert coords[0][0] == pytest.approx(4487.0)
+
+
+def test_mtp_calibration_overrides_adapter_units(cfg):
+    cfg["mtp_calibration"] = [
+        {"name": "A", "x_um": 0, "y_um": 0, "unit_x": 0.0, "unit_y": 0.0},
+        {"name": "B", "x_um": 75000, "y_um": 0, "unit_x": 1.0, "unit_y": 0.0},
+        {"name": "C", "x_um": 0, "y_um": 25000, "unit_x": 0.0,
+         "unit_y": 0.3333},
+    ]
+    shots = [M.Shot(0, 0, 37500.0, 0.0)]
+    _, mode = M.xeo_coords(cfg, shots, M.fit_mtp(cfg))
+    assert mode == "mtp"
 
 
 def test_sequential_naming_still_available(cfg):
