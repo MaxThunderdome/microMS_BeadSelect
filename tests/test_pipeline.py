@@ -267,7 +267,7 @@ def test_xeo_splits_at_400_and_round_trips(cfg, tmp_path):
     assert mtp is not None
 
     shots = [M.Shot(0, 0, 100.0 * i, 200.0) for i in range(950)]
-    files = M.write_xeo(tmp_path / "t", shots, [], mtp, cfg)
+    files = M.write_xeo(tmp_path / "t", shots, [], cfg, mtp)
     assert [len(M.read_xeo(f)) for f in files] == [400, 400, 150]
 
 
@@ -399,7 +399,7 @@ def test_run_and_xeo_use_identical_names(cfg, tmp_path):
          "unit_y": 0.3333},
     ]
     shots = [M.Shot(i // 4, 90 * (i % 4), 100.0 * i, 200.0) for i in range(5)]
-    xeo = M.write_xeo(tmp_path / "t", shots, [], M.fit_mtp(cfg), cfg)[0]
+    xeo = M.write_xeo(tmp_path / "t", shots, [], cfg, M.fit_mtp(cfg))[0]
 
     names = [M.position_name(cfg, i, s) for i, s in enumerate(shots)]
     run = M.write_run(tmp_path / "t_001.run", names, cfg)

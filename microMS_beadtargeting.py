@@ -229,7 +229,7 @@ CONFIG = {
     "output": {
         "prefix": "targets",
         "serpentine-order": True,
-        "write-xeo": False,
+        "write-xeo": True,
         "overlay": True,
         "overlay-show": False,
         "zoom": True,
@@ -252,10 +252,14 @@ CONFIG = {
         # Needs the adapter origin: the stage reading at adapter (0,0).
         # Drive to a known named position, read the stage, subtract.
         "name-coordinates": {
-            "enabled": False,
+            "enabled": True,
             "unit-um": 10,
-            "x0-um": None,      # MEASURE
-            "y0-um": None,      # MEASURE
+            # Stage reading at adapter (0,0). None assumes the stage
+            # origin and the adapter origin coincide -- `run` prints
+            # the resulting coordinate range next to the reference
+            # file's so a mismatch is obvious.
+            "x0-um": None,
+            "y0-um": None,
             "flip-x": False,
             "flip-y": False,
         },
@@ -1023,17 +1027,58 @@ def fit_mtp(cfg: dict) -> Transform | None:
     return M
 
 
+def xeo_coords(cfg: dict, shots: list[Shot],
+               M: "Transform | None") -> tuple[np.ndarray, str]:
+    """
+    Coordinates to write into the .xeo, and a label for the mode used.
+
+    Two routes:
+
+    "mtp"      A fitted stage-um -> plate-fraction transform, from
+               three measured named MTP positions. Use this when you
+               have real UnitCoord values out of a flexImaging export.
+
+    "adapter"  Stage microns converted straight to adapter units. The
+               unit is 10 um, derived from Dr. Neumann's reference run
+               file: the two slide bands sit 2623 units apart, which
+               is the 26.2 mm slide pitch of a two-slide adapter, and
+               each region is 448 x 295 units, a 4.48 x 2.95 mm kidney
+               section.
+
+               The origin defaults to the stage origin. That is an
+               assumption, not a measurement -- so the coordinate range
+               is printed next to the reference file's range, and a
+               mismatch is visible immediately.
+    """
+    pts = (np.array([[s.x_um, s.y_um] for s in shots], float)
+           if shots else np.zeros((0, 2)))
+
+    if M is not None:
+        return (M.px_to_um(pts) if len(pts) else pts), "mtp"
+
+    nc = cfg["output"].get("name-coordinates") or {}
+    unit = float(nc.get("unit-um", 10))
+    x0 = float(nc.get("x0-um") or 0.0)
+    y0 = float(nc.get("y0-um") or 0.0)
+    sx = -1.0 if nc.get("flip-x", False) else 1.0
+    sy = -1.0 if nc.get("flip-y", False) else 1.0
+
+    if not len(pts):
+        return pts, "adapter"
+    out = np.column_stack([sx * (pts[:, 0] - x0) / unit,
+                           sy * (pts[:, 1] - y0) / unit])
+    return out, "adapter"
+
+
 def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
-              M: Transform, cfg: dict) -> list[Path]:
+              cfg: dict, M: "Transform | None" = None) -> list[Path]:
     """Write .xeo files, splitting at the 400-position autoXecute cap."""
     written = []
     chunks = [shots[i:i + XEO_MAX_POSITIONS]
               for i in range(0, len(shots), XEO_MAX_POSITIONS)] or [[]]
 
     for n, chunk in enumerate(chunks, start=1):
-        pts = np.array([[s.x_um, s.y_um] for s in chunk], float) \
-            if chunk else np.zeros((0, 2))
-        unit = M.px_to_um(pts) if len(pts) else pts
+        unit, _mode = xeo_coords(cfg, chunk, M)
 
         body = []
         for k, (s, u) in enumerate(zip(chunk, unit)):
@@ -1131,22 +1176,17 @@ def stage_to_adapter(cfg: dict, x_um: float, y_um: float) -> tuple[int, int]:
     """
     nc = cfg["output"].get("name-coordinates") or {}
     unit = float(nc.get("unit-um", 10))
-    x0, y0 = nc.get("x0-um"), nc.get("y0-um")
-    if x0 is None or y0 is None:
-        sys.exit(
-            "output.name-coordinates is enabled but the adapter origin is "
-            "not set.\n"
-            "  X and Y in a position name are physical adapter coordinates, "
-            "so a name\n"
-            "  cannot be written without knowing where adapter (0,0) sits in "
-            "stage um.\n"
-            "  Drive to a known named position, read the stage, and set "
-            "x0-um / y0-um.")
+    # None means the stage origin and the adapter origin are assumed
+    # to coincide. `run` prints the resulting coordinate range next to
+    # the reference file's, so a wrong origin is visible immediately
+    # rather than silently baked into the output.
+    x0 = float(nc.get("x0-um") or 0.0)
+    y0 = float(nc.get("y0-um") or 0.0)
 
     sx = -1.0 if nc.get("flip-x", False) else 1.0
     sy = -1.0 if nc.get("flip-y", False) else 1.0
-    return (int(round(sx * (x_um - float(x0)) / unit)),
-            int(round(sy * (y_um - float(y0)) / unit)))
+    return (int(round(sx * (x_um - x0) / unit)),
+            int(round(sy * (y_um - y0) / unit)))
 
 
 def position_name(cfg: dict, index: int, shot) -> str:
@@ -2100,31 +2140,43 @@ def run(cfg: dict) -> None:
         if draw_zoom(zp, beads, cfg, T, scan):
             print(f"Wrote {zp.name}")
 
-    if cfg["output"].get("write-xeo", False):
+    if cfg["output"].get("write-xeo", True) and ordered:
         M = fit_mtp(cfg)
-        if M is None:
-            print("\nSKIPPED .xeo: mtp_calibration has fewer than 3 entries.\n"
-                  "  UnitCoord_X/Y are plate fractions, not microns. Measure\n"
-                  "  three named MTP positions on the instrument and pair\n"
-                  "  each with its UnitCoord from a real flexImaging export.\n"
-                  "  No default is defensible, so nothing is written.")
-        else:
-            files = write_xeo(prefix, ordered, beads, M, cfg)
-            for f in files:
-                print(f"Wrote {f.name}  ({len(read_xeo(f))} positions)")
+        coords, mode = xeo_coords(cfg, ordered, M)
 
-            if cfg["output"].get("write-run", True):
-                for f in files:
-                    names = [position_name(cfg, i, sh)
-                             for i, sh in enumerate(ordered)]
-                    start = files.index(f) * XEO_MAX_POSITIONS
-                    chunk = names[start:start + XEO_MAX_POSITIONS]
-                    rp = write_run(f.with_suffix(".run"), chunk, cfg)
-                    print(f"Wrote {rp.name}  ({len(read_run(rp))} positions)"
-                          f"  geometry={rp.stem}")
-            print("\nbaseGeometry is confirmed against a real run file. "
-                  "The .xeo XML wrapper is\n  still unverified -- diff one "
-                  "genuine flexImaging export before acquiring.")
+        files = write_xeo(prefix, ordered, beads, cfg, M)
+        for f in files:
+            print(f"Wrote {f.name}  ({len(read_xeo(f))} positions)")
+
+        if cfg["output"].get("write-run", True):
+            names = [position_name(cfg, i, sh) for i, sh in enumerate(ordered)]
+            for idx, f in enumerate(files):
+                s0 = idx * XEO_MAX_POSITIONS
+                rp = write_run(f.with_suffix(".run"),
+                               names[s0:s0 + XEO_MAX_POSITIONS], cfg)
+                print(f"Wrote {rp.name}  ({len(read_run(rp))} positions)"
+                      f"  geometry={rp.stem}")
+
+        if mode == "adapter":
+            nc = cfg["output"].get("name-coordinates") or {}
+            print(f"\nCoordinates    : adapter units "
+                  f"({nc.get('unit-um', 10)} um each), origin "
+                  f"({nc.get('x0-um') or 0}, {nc.get('y0-um') or 0}) um")
+            print(f"  written range  X {coords[:, 0].min():.0f} to "
+                  f"{coords[:, 0].max():.0f}   "
+                  f"Y {coords[:, 1].min():.0f} to {coords[:, 1].max():.0f}")
+            print("  reference run  X 1868 to 7162   Y 1308 to 4801")
+            print("  If those ranges do not overlap the origin is wrong. Set")
+            print("  CONFIG output name-coordinates x0-um / y0-um to the "
+                  "stage")
+            print("  reading at adapter (0,0).")
+        else:
+            print("\nCoordinates    : plate fractions from mtp_calibration")
+
+        print("\nbaseGeometry matches a real run file. The .xeo XML wrapper "
+              "is still")
+        print("  unverified -- diff a genuine flexImaging export before "
+              "acquiring.")
 
 
 
@@ -2341,7 +2393,7 @@ def selftest() -> None:
     assert M is not None
     fake = [Shot(0, 0, 100.0 * i, 200.0) for i in range(950)]
     tmp = HERE / "_selftest"
-    files = write_xeo(tmp, fake, beads, M, cfg)
+    files = write_xeo(tmp, fake, beads, cfg, M)
     counts = [len(read_xeo(f)) for f in files]
     assert counts == [400, 400, 150], counts
     print(f"   950 positions -> {len(files)} files {counts} via lines[13:-12]")
