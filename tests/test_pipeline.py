@@ -239,7 +239,7 @@ def test_xeo_splits_at_400_and_round_trips(cfg, tmp_path):
     assert mtp is not None
 
     shots = [M.Shot(0, 0, 100.0 * i, 200.0) for i in range(950)]
-    files = M.write_xeo(tmp_path / "t", shots, [], mtp)
+    files = M.write_xeo(tmp_path / "t", shots, [], mtp, cfg)
     assert [len(M.read_xeo(f)) for f in files] == [400, 400, 150]
 
 
@@ -356,3 +356,50 @@ def test_collinear_fiducials_are_flagged():
 def test_well_spread_fiducials_are_not_flagged():
     src = np.array([[0., 0.], [2000., 0.], [0., 1500.]])
     assert M.check_fiducial_geometry(src) == []
+
+
+# ---------------------------------------------------------------------
+# autoXecute .run
+# ---------------------------------------------------------------------
+
+def test_run_and_xeo_use_identical_names(cfg, tmp_path):
+    """autoXecute matches the two files by name alone."""
+    cfg["mtp_calibration"] = [
+        {"name": "A", "x_um": 0, "y_um": 0, "unit_x": 0.0, "unit_y": 0.0},
+        {"name": "B", "x_um": 75000, "y_um": 0, "unit_x": 1.0, "unit_y": 0.0},
+        {"name": "C", "x_um": 0, "y_um": 25000, "unit_x": 0.0,
+         "unit_y": 0.3333},
+    ]
+    shots = [M.Shot(i // 4, 90 * (i % 4), 100.0 * i, 200.0) for i in range(5)]
+    xeo = M.write_xeo(tmp_path / "t", shots, [], M.fit_mtp(cfg), cfg)[0]
+
+    names = [M.position_name(cfg, i, s) for i, s in enumerate(shots)]
+    run = M.write_run(tmp_path / "t_001.run", names, cfg)
+
+    assert M.read_run(run) == names
+    for n in names:
+        assert n in xeo.read_text()
+
+
+def test_run_geometry_attribute_matches_filename(cfg, tmp_path):
+    """autoXecute resolves coordinates via geometry -> <stem>.xeo."""
+    run = M.write_run(tmp_path / "targets_001.run", ["R00X1Y1"], cfg)
+    assert 'geometry="targets_001"' in run.read_text()
+
+
+def test_run_declares_the_confirmed_base_geometry(cfg, tmp_path):
+    """Confirmed against a real AutoExecute 7.6.6.0 run file."""
+    run = M.write_run(tmp_path / "t.run", ["R00X1Y1"], cfg)
+    assert 'baseGeometry="MTP Slide Adapter II"' in run.read_text()
+
+
+def test_run_uses_crlf_like_the_reference_file(cfg, tmp_path):
+    run = M.write_run(tmp_path / "t.run", ["R00X1Y1", "R00X2Y1"], cfg)
+    raw = run.read_bytes()
+    assert b"\r\n" in raw
+    assert b"\n" not in raw.replace(b"\r\n", b"")
+
+
+def test_position_name_pattern_is_configurable(cfg):
+    cfg["output"]["position-name"] = "B{bead:04d}_A{angle:03d}"
+    assert M.position_name(cfg, 0, M.Shot(29, 90, 0, 0)) == "B0029_A090"

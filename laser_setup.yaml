@@ -204,6 +204,35 @@ output:
   zoom-window-px: 700
   zoom-scale: 3
 
+  # --- autoXecute .run ---------------------------------------------
+  # The .xeo holds the coordinates; the .run is the ordered list of
+  # position NAMES autoXecute actually executes, and it resolves
+  # coordinates via geometry -> <stem>.xeo. Both are written together
+  # and their names must match exactly.
+  write-run: true
+
+  # Naming shared by both files. Fields available: {region} {i} {j}
+  # {n} {bead} {angle}. The default follows the convention seen in a
+  # real run file from the instrument (R00X4487Y4424). Use
+  # 'B{bead:04d}_A{angle:03d}' instead if you prefer names that say
+  # which bead and which shot -- but confirm flexImaging accepts
+  # free-form names before relying on it.
+  position-name: "R{region:02d}X{i}Y{j}"
+  region: 0
+  chip: 0
+
+  # Copied verbatim into the .run header. Everything not listed here
+  # is taken from the reference file; see RUN_ATTRS_DEFAULT.
+  #
+  # UNVERIFIED: 'type' is FastImaging in the reference, which was a
+  # rastered tissue image. This pipeline fires discrete positions, so
+  # the correct value is probably different. Confirm before running.
+  run:
+    acqMethod: 'D:\Methods\your_method.m'
+    directory: 'D:\Data\beads'
+    sampleName: beadrun
+    type: FastImaging
+
 
 # ---------------------------------------------------------------------
 # 7b. BEAD MANUAL SELECTION

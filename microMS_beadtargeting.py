@@ -778,9 +778,12 @@ def write_csv(path: Path, beads: list[Bead], shots: list[Shot]) -> None:
 # requires the exact strings; the 13-line header and 12-line footer
 # are what make microMS's own lines[13:-12] position slice work.
 #
-# UNVERIFIED: the PlateTypeName string has not been confirmed against
-# a real timsTOF fleX export. Diff a genuine flexImaging .xeo against
-# a file from this writer before an acquisition run.
+# PlateTypeName is CONFIRMED. A real autoXecute run file from the
+# target instrument (Imaging_Run.run, AutoExecute 7.6.6.0) carries
+# baseGeometry="MTP Slide Adapter II" -- exactly the string below.
+#
+# The surrounding XML wrapper is still UNVERIFIED; no genuine .xeo has
+# been seen. Diff one against this writer's output before acquiring.
 # =====================================================================
 
 XEO_HEADER = [
@@ -852,7 +855,7 @@ def fit_mtp(cfg: dict) -> Transform | None:
 
 
 def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
-              M: Transform) -> list[Path]:
+              M: Transform, cfg: dict) -> list[Path]:
     """Write .xeo files, splitting at the 400-position autoXecute cap."""
     written = []
     chunks = [shots[i:i + XEO_MAX_POSITIONS]
@@ -865,7 +868,9 @@ def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
 
         body = []
         for k, (s, u) in enumerate(zip(chunk, unit)):
-            name = f"B{s.bead_id:04d}_A{int(s.angle_deg):03d}"
+            # Same name the .run will reference; the two files are
+            # matched by name alone.
+            name = position_name(cfg, (n - 1) * XEO_MAX_POSITIONS + k, s)
             body.append(
                 f'    <Spot ID="{k + 1}" SpotName="{name}" '
                 f'PositionName="{name}" '
@@ -880,6 +885,99 @@ def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
 def read_xeo(path: Path) -> list[str]:
     """microMS's position slice: 13 header lines, 12 footer lines."""
     return path.read_text().splitlines()[13:-12]
+
+
+
+# =====================================================================
+# EXPORT -- .run  (autoXecute)
+#
+# FORMAT SPEC, derived from a real run file produced by the target
+# instrument: Imaging_Run.run, AutoExecute 7.6.6.0, 922611 positions
+# across 7 regions.
+#
+# The .run carries NO coordinates. It is a flat ordered list of
+# position NAMES plus acquisition settings; the coordinates for those
+# names live in the .xeo identified by the `geometry` attribute. The
+# two files are therefore written together, and `geometry` must equal
+# the .xeo filename stem or autoXecute cannot resolve a single point.
+#
+# Observed naming: R<region:02d>X<x>Y<y>, x and y whole numbers
+# stepping by 1. In the reference file those are raster indices of an
+# imaging run -- not microns, not plate fractions.
+# =====================================================================
+
+RUN_ATTRS_DEFAULT = {
+    "AnalysisSpectraType": "Imaging",
+    "DataStorage": "Container",
+    "appname": "AutoExecute",
+    "appversion": "7.6.6.0_036f43428109dad9058d7f326002a644b119244f_1",
+    "barcode": "-1",
+    "baseGeometry": "MTP Slide Adapter II",
+    "binDataPoints": "8000",
+    "cleanSourceAfterMeasurement": "Off",
+    "doBaselineSub": "false",
+    "doSmoothing": "false",
+    "ejectTargetAfterMeasurement": "true",
+    "executeExternalCalibration": "true",
+    "fragmentMass": "0.0000",
+    "parentMass": "0.0000",
+    "runID": "",
+    "stopAfterMsMeasurement": "false",
+    "targetID": "",
+    "type": "FastImaging",
+    "use1to1Preteaching": "true",
+    "version": "1.0",
+}
+
+
+def _xml_escape(v: str) -> str:
+    return (v.replace("&", "&amp;").replace("<", "&lt;")
+             .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def position_name(cfg: dict, index: int, shot) -> str:
+    """
+    Name for one position, shared by the .xeo and the .run.
+
+    The two files are matched by name alone, so whatever this returns
+    must be used identically in both. Default follows the convention
+    seen in the reference run file.
+    """
+    out = cfg["output"]
+    pattern = out.get("position-name", "R{region:02d}X{i}Y{j}")
+    return pattern.format(region=out.get("region", 0),
+                          i=index + 1, j=1, n=index + 1,
+                          bead=shot.bead_id, angle=int(shot.angle_deg))
+
+
+def write_run(path: Path, names: list[str], cfg: dict) -> Path:
+    """Write an autoXecute .run listing positions by name."""
+    import datetime
+
+    run = dict(RUN_ATTRS_DEFAULT)
+    run.update({k: str(v) for k, v in (cfg["output"].get("run") or {}).items()})
+    run["date"] = datetime.datetime.now().astimezone().isoformat(
+        timespec="seconds")
+    run["geometry"] = path.stem            # must match the .xeo stem
+
+    attrs = " ".join(f'{k}="{_xml_escape(str(v))}"'
+                     for k, v in sorted(run.items()))
+    chip = cfg["output"].get("chip", 0)
+
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>', f"<table {attrs}>"]
+    lines += [f'\t<cont Chip_on_Scout="{chip}" Pos_on_Scout="{n}"/>'
+              for n in names]
+    lines.append("</table>")
+
+    # The reference file uses CRLF throughout.
+    path.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+    return path
+
+
+def read_run(path: Path) -> list[str]:
+    """Position names from a .run, in order."""
+    import re
+    return re.findall(r'Pos_on_Scout="([^"]+)"', path.read_text())
 
 
 # =====================================================================
@@ -1739,11 +1837,22 @@ def run(cfg: dict) -> None:
                   "  each with its UnitCoord from a real flexImaging export.\n"
                   "  No default is defensible, so nothing is written.")
         else:
-            files = write_xeo(prefix, ordered, beads, M)
+            files = write_xeo(prefix, ordered, beads, M, cfg)
             for f in files:
                 print(f"Wrote {f.name}  ({len(read_xeo(f))} positions)")
-            print("\nDiff one of these against a genuine flexImaging export "
-                  "before acquiring. The PlateTypeName is UNVERIFIED.")
+
+            if cfg["output"].get("write-run", True):
+                for f in files:
+                    names = [position_name(cfg, i, sh)
+                             for i, sh in enumerate(ordered)]
+                    start = files.index(f) * XEO_MAX_POSITIONS
+                    chunk = names[start:start + XEO_MAX_POSITIONS]
+                    rp = write_run(f.with_suffix(".run"), chunk, cfg)
+                    print(f"Wrote {rp.name}  ({len(read_run(rp))} positions)"
+                          f"  geometry={rp.stem}")
+            print("\nbaseGeometry is confirmed against a real run file. "
+                  "The .xeo XML wrapper is\n  still unverified -- diff one "
+                  "genuine flexImaging export before acquiring.")
 
 
 
@@ -1957,7 +2066,7 @@ def selftest() -> None:
     assert M is not None
     fake = [Shot(0, 0, 100.0 * i, 200.0) for i in range(950)]
     tmp = HERE / "_selftest"
-    files = write_xeo(tmp, fake, beads, M)
+    files = write_xeo(tmp, fake, beads, M, cfg)
     counts = [len(read_xeo(f)) for f in files]
     assert counts == [400, 400, 150], counts
     print(f"   950 positions -> {len(files)} files {counts} via lines[13:-12]")

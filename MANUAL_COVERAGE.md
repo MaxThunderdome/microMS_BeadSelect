@@ -195,18 +195,39 @@ The guide also confirms the slide adapter `.xeo` geometry file defines the
 coordinate set that `brukerMapper` references — which supports, without
 confirming, our `MTP Slide Adapter II` header.
 
+### Settled by the reference run file
+
+`Imaging_Run.run` (AutoExecute 7.6.6.0, 922 611 positions across 7 regions,
+supplied by Dr. Neumann) confirms:
+
+- `baseGeometry="MTP Slide Adapter II"` — our `.xeo` `PlateTypeName` string is
+  correct. Previously a guess.
+- The `.run` carries **no coordinates**. It is an ordered list of position
+  *names* plus acquisition settings, and resolves coordinates through
+  `geometry="<stem>"` → `<stem>.xeo`. So a targeting run needs **both** files,
+  written together, with names matching exactly.
+- Position naming: `R<region:02d>X<x>Y<y>`, integers stepping by 1. In that file
+  they are raster indices of an imaging acquisition — not microns, not plate
+  fractions.
+- The matching geometry is named `Imaging_Run`, so **`Imaging_Run.xeo` exists in
+  the same folder on her machine.** That is the single file still needed.
+
 **Still to verify on the instrument:**
 
 1. Get her motor-coordinate file, and ask which instrument and adapter mounting
    it was measured on.
-2. Export a real `.xeo` from flexImaging and diff it against our writer's
-   output. The header remains unverified.
+2. Get `Imaging_Run.xeo` — the geometry paired with the run file already
+   supplied. It is the last piece: it shows the real `UnitCoord` values and the
+   XML wrapper, which settles both the format and the plate-fraction question
+   below.
 3. Confirm whether `UnitCoord_X/Y` share a single scale or are normalised
    independently to plate width and height. Our stacked fit assumes one scale
    and reports a residual if that is wrong; a non-square adapter would break it.
 4. Measure focal spot and beam scan width, replacing the 10 µm / 20 µm
    placeholders.
 5. Confirm whether autoXecute random walk is enabled in the acquisition method.
+6. Confirm the `.run` `type` attribute for discrete profiling. The reference
+   uses `FastImaging`, but that run rastered tissue; we fire discrete positions.
 
 ---
 
