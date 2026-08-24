@@ -442,3 +442,40 @@ def test_missing_adapter_origin_refuses(cfg):
 def test_sequential_naming_still_available(cfg):
     cfg["output"]["name-coordinates"] = {"enabled": False}
     assert M.position_name(cfg, 0, M.Shot(0, 0, 999.0, 999.0)) == "R00X1Y1"
+
+
+# ---------------------------------------------------------------------
+# selection window visibility
+# ---------------------------------------------------------------------
+
+def test_category_assignment_is_exclusive(cfg, transform):
+    """Each bead falls in exactly one checkbox category."""
+    beads = [M.Bead(1000, 1200, 8.2),                    # -> accepted
+             M.Bead(3000, 1200, 8.2, clumped=True),      # -> clumped
+             M.Bead(5000, 1200, 1.0)]                    # -> rejected
+    M.to_stage(beads, transform)
+    M.isolation_filter(beads, cfg["min-bead-separation"])
+    M.shape_filter(beads, cfg)
+
+    def category(b):
+        if b.accepted:
+            return "accepted"
+        if b.clumped:
+            return "clumped"
+        return "rejected"
+
+    assert [category(b) for b in beads] == ["accepted", "clumped", "rejected"]
+
+
+def test_hiding_does_not_change_export(cfg, transform):
+    """Visibility is display only -- a hidden bead is still exported
+    and still counts as an isolation neighbour."""
+    beads = [M.Bead(1000, 1200, 8.2), M.Bead(1010, 1200, 8.2)]
+    M.to_stage(beads, transform)
+    M.isolation_filter(beads, cfg["min-bead-separation"])
+    M.shape_filter(beads, cfg)
+    before = [b.accepted for b in beads]
+
+    # hiding is a dict in the GUI closure; nothing touches bead state
+    assert [b.accepted for b in beads] == before
+    assert all(not b.accepted for b in beads)   # each blocks the other

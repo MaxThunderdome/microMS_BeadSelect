@@ -1627,7 +1627,8 @@ def bead_manual_selection(cfg: dict) -> None:
       close the window      write manual_selection.csv
     """
     import matplotlib.pyplot as plt
-    from matplotlib.widgets import RectangleSelector, Button
+    from matplotlib.widgets import (RectangleSelector, Button,
+                                    CheckButtons)
     from matplotlib.patches import Circle
 
     backend = plt.get_backend()
@@ -1654,6 +1655,18 @@ def bead_manual_selection(cfg: dict) -> None:
 
     box = {"rect": None}
 
+    # Which categories are drawn. Hiding a category only affects the
+    # display -- a hidden bead keeps its accept/reject state, still
+    # counts as an isolation neighbour, and is still exported.
+    show = {"accepted": True, "clumped": True, "rejected": True}
+
+    def category(b):
+        if b.accepted:
+            return "accepted"
+        if b.clumped:
+            return "clumped"
+        return "rejected"
+
     def colour(b):
         if b.accepted:
             return "#2ca02c"
@@ -1674,17 +1687,24 @@ def bead_manual_selection(cfg: dict) -> None:
         for b, c in zip(beads, patches):
             c.set_edgecolor(colour(b))
             c.set_linewidth(2.0 if b.manual else 1.3)
+            c.set_visible(show[category(b)])
+        hidden = [k for k, v in show.items() if not v]
+        note = f"   |   HIDDEN: {', '.join(hidden)}" if hidden else ""
         ax.set_title(f"Bead manual selection   |   accepted "
                      f"{sum(b.accepted for b in beads)} / {len(beads)}   |   "
-                     f"manual overrides {sum(1 for b in beads if b.manual)}")
+                     f"manual overrides {sum(1 for b in beads if b.manual)}"
+                     f"{note}")
         fig.canvas.draw_idle()
 
     def in_box():
+        # Only VISIBLE beads. Acting on a hidden category would toggle
+        # things the operator cannot see and did not mean to touch.
         if not box["rect"]:
             return []
         x0, x1, y0, y1 = box["rect"]
         return [i for i, b in enumerate(beads)
-                if x0 <= b.x_px <= x1 and y0 <= b.y_px <= y1]
+                if x0 <= b.x_px <= x1 and y0 <= b.y_px <= y1
+                and show[category(b)]]
 
     def on_box(eclick, erelease):
         x0, x1 = sorted((eclick.xdata, erelease.xdata))
@@ -1717,9 +1737,11 @@ def bead_manual_selection(cfg: dict) -> None:
     def on_click(ev):
         if ev.inaxes is not ax or ev.button != 3 or ev.xdata is None:
             return
-        d = [math.hypot(b.x_px - ev.xdata, b.y_px - ev.ydata) for b in beads]
+        # Hidden beads are not clickable, for the same reason.
+        d = [math.hypot(b.x_px - ev.xdata, b.y_px - ev.ydata)
+             if show[category(b)] else float("inf") for b in beads]
         i = int(np.argmin(d))
-        if d[i] > 40:
+        if not math.isfinite(d[i]) or d[i] > 40:
             return
         b = beads[i]
         b.accepted = not b.accepted
@@ -1765,6 +1787,31 @@ def bead_manual_selection(cfg: dict) -> None:
         btn = Button(fig.add_axes([x, 0.045, w, 0.045]), lbl)
         btn.on_clicked(lambda _ev, f=fn: f())
         keep.append(btn)
+
+    # Show/hide by category. On a crowded slide the red and purple
+    # circles bury the green ones -- 549 of 1003 objects were clumps
+    # on the reference scan -- so hiding them is the only way to see
+    # what will actually be acquired.
+    cax = fig.add_axes([0.78, 0.03, 0.20, 0.085])
+    cax.set_frame_on(False)
+    checks = CheckButtons(
+        cax,
+        ["accepted (green)", "clumped (purple)", "rejected (red)"],
+        [show["accepted"], show["clumped"], show["rejected"]])
+    for lbl_obj, col in zip(checks.labels,
+                            ("#2ca02c", "#9467bd", "#d62728")):
+        lbl_obj.set_color(col)
+        lbl_obj.set_fontsize(9)
+
+    def toggle(label):
+        key = {"accepted (green)": "accepted",
+               "clumped (purple)": "clumped",
+               "rejected (red)": "rejected"}[label]
+        show[key] = not show[key]
+        refresh()
+
+    checks.on_clicked(toggle)
+    keep.append(checks)
 
     refresh()
     plt.show()

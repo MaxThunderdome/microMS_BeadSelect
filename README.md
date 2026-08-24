@@ -188,7 +188,19 @@ operator gets the final say.
 | **Reject box** | reject every bead inside |
 | **Clear box** | drop the region selection |
 | **Reset** | discard all manual overrides |
+| checkboxes | show or hide each colour |
 | close the window | write `manual_selection.csv` |
+
+The three checkboxes control what is drawn. On a crowded slide the red and
+purple circles bury the green ones — 549 of 1003 objects were clumps on the
+reference scan — so unticking them is the only practical way to see what will
+actually be acquired.
+
+Hiding is display only. A hidden bead keeps its accept/reject state, still
+counts as an isolation neighbour, and is still exported. But it is **not
+clickable and not caught by the box tools**, so you cannot toggle something you
+cannot see. The title lists any hidden category so a filtered view is never
+mistaken for the whole picture.
 
 The box tools are the fast path — draw around a debris field or a dense patch
 and reject the lot in one click, rather than clicking a hundred beads.
