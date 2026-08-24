@@ -643,7 +643,13 @@ def test_paper_accuracy_constants_present():
     assert M.CONFIG["recommended-fiducials"] >= 12
 
 
-def test_separation_exceeds_error_plus_probe(cfg):
-    tle = float(cfg["target-localization-error-um"])
+def test_localization_error_is_unset_by_default():
+    """38.3 um is a 2017 ultrafleXtreme with a ~100 um footprint, not
+    this instrument. None skips the check until it is measured."""
+    assert M.CONFIG["target-localization-error-um"] is None
+
+
+def test_separation_rule_when_error_is_known(cfg):
+    cfg["target-localization-error-um"] = 10.0
     probe_r = M.footprint_um(cfg) / 2.0
-    assert float(cfg["min-bead-separation"]) > tle + probe_r
+    assert float(cfg["min-bead-separation"]) > 10.0 + probe_r

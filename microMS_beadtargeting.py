@@ -158,15 +158,21 @@ CONFIG = {
     # Target localization error: the distance between where a shot was
     # requested and where the laser actually fired.
     #
-    # Comi et al. 2017 measured 38.3 +/- 3.9 um on a Bruker
-    # ultrafleXtreme (n = 71) and give two rules that follow from it:
+    # Comi et al. 2017 give two rules that follow from it:
     #
     #   probe radius    >= target localization error
     #   distance filter >  target localization error + probe radius
     #
-    # `run` checks both and says so. 38.3 is THEIR instrument, not the
-    # fleX -- measure yours with the burn-mark test and replace it.
-    "target-localization-error-um": 38.3,
+    # They measured 38.3 +/- 3.9 um on a 2017 ultrafleXtreme with a
+    # ~100 um laser footprint. That is NOT this instrument: the fleX
+    # has smartbeam 3D targeting to 10 um, and microGRID to 5 um, so
+    # its real error is likely far smaller.
+    #
+    # None means the check is skipped. Measure yours with the burn-mark
+    # test -- fire a target list on a sacrificial slide, rescan, and
+    # measure the offset from the intended positions -- then put that
+    # number here and the two rules start being checked.
+    "target-localization-error-um": None,
 
     # The paper recommends at least 12 fiducials; error falls as
     # 1/sqrt(n), and the fiducial training set was the ONLY factor that
