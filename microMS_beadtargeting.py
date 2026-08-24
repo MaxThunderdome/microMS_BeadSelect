@@ -241,28 +241,13 @@ CONFIG = {
         # geometry -> <stem>.xeo. Both are written together and their
         # names must match exactly.
         "write-run": True,
-        "position-name": "R{region:02d}X{i}Y{j}",
+        # microMS's own convention. Its loadXEO parses this back into
+        # pixel positions, so a file written here can be reopened in
+        # microMS. Change it only if something downstream needs a
+        # different scheme.
+        "position-name": "x_{px:.0f}y_{py:.0f}",
         "region": 0,
         "chip": 0,
-
-        # X and Y in a position name are PHYSICAL ADAPTER COORDINATES
-        # in whole units, not sequence numbers. From the reference run
-        # file one unit is 10 um, on both axes.
-        #
-        # Needs the adapter origin: the stage reading at adapter (0,0).
-        # Drive to a known named position, read the stage, subtract.
-        "name-coordinates": {
-            "enabled": True,
-            "unit-um": 10,
-            # Stage reading at adapter (0,0). None assumes the stage
-            # origin and the adapter origin coincide -- `run` prints
-            # the resulting coordinate range next to the reference
-            # file's so a mismatch is obvious.
-            "x0-um": None,
-            "y0-um": None,
-            "flip-x": False,
-            "flip-y": False,
-        },
 
         # Copied into the .run header; everything else defaults to the
         # reference file. "type" is FastImaging there, which rastered
@@ -280,16 +265,28 @@ CONFIG = {
     "manual-selection": {"match-radius-px": 12},
 
     # ---- MTP calibration -------------------------------------------------
-    # UnitCoord_X/Y in a .xeo are FRACTIONS OF THE PLATE, not microns.
-    # Fit from three named MTP grid positions measured on YOUR
-    # instrument with YOUR adapter seated, each paired with its
-    # UnitCoord read out of a real flexImaging export. Spread them
-    # across the plate.
+    # UnitCoord in a .xeo is a SIGNED plate fraction, about +/-0.73 in
+    # X and +/-0.55 in Y, measured from the plate centre. The header's
+    # alpha/beta give the scale: 51.75 mm per unit, both axes.
     #
-    #   {"name": "A1", "x_um": ..., "y_um": ...,
-    #    "unit_x": ..., "unit_y": ...},
+    # The fractions of the named MTP grid positions are fixed plate
+    # geometry and are built in (MTP_MAP_X / MTP_MAP_Y). What must be
+    # measured on YOUR instrument is the STAGE COORDINATE of two or
+    # more of those named positions -- the same thing microMS keeps in
+    # <mapper>Coords.txt. Its shipped ultrafleXtreme file reads:
     #
-    # Empty means the CSV is still written and the .xeo is skipped.
+    #     C20  -23215  -13605
+    #     C5   -90705  -13715
+    #     G20  -23190  -31610
+    #     G5   -90680  -31715
+    #
+    # so entries here are:
+    #
+    #     {"name": "C20", "x_um": -23215, "y_um": -13605},
+    #
+    # Rows are C-G and J-N, columns 5-20. Note the values are NEGATIVE
+    # on that instrument. Empty means the CSV is written and the .xeo
+    # is skipped.
     "mtp_calibration": [],
 }
 
@@ -836,6 +833,8 @@ class Shot:
     angle_deg: float
     x_um: float
     y_um: float
+    x_px: float = 0.0
+    y_px: float = 0.0
     dropped: bool = False
     drop_reason: str = ""
 
@@ -852,8 +851,10 @@ def shot_radius(bead: Bead, cfg: dict) -> float:
     return r + float(sp["edge-offset"])
 
 
-def place_shots(beads: list[Bead], cfg: dict) -> list[Shot]:
+def place_shots(beads: list[Bead], cfg: dict,
+                T: "Transform | None" = None) -> list[Shot]:
     angles = [float(a) for a in cfg["laser-shot-angles"]]
+    T_um_per_px = T.um_per_px if T is not None else 0.0
     crater = footprint_um(cfg)
     enforce = cfg.get("enforce-bead-clearance", True)
 
@@ -869,8 +870,14 @@ def place_shots(beads: list[Bead], cfg: dict) -> list[Shot]:
         ring: list[Shot] = []
         for a in angles:
             rad = math.radians(a)
-            s = Shot(i, a, b.x_um + R * math.cos(rad),
-                     b.y_um + R * math.sin(rad))
+            # Pixel position too: microMS's PositionName convention
+            # encodes it, which is how its loadXEO reads the file back.
+            R_px = R / T_um_per_px if T_um_per_px else 0.0
+            s = Shot(i, a,
+                     b.x_um + R * math.cos(rad),
+                     b.y_um + R * math.sin(rad),
+                     b.x_px + R_px * math.cos(rad),
+                     b.y_px + R_px * math.sin(rad))
 
             # No software travel-limit check. The stage enforces its
             # own limits in hardware; a guessed coordinate window here
@@ -959,136 +966,182 @@ def write_csv(path: Path, beads: list[Bead], shots: list[Shot]) -> None:
 # been seen. Diff one against this writer's output before acquiring.
 # =====================================================================
 
+# FORMAT SPEC, reproduced verbatim from microMS's brukerMapper.py so
+# that files interoperate. This is the one place microMS source is
+# copied; see ATTRIBUTION.md.
+#
+# The header is 12 lines, plus the <PlateSpots> line written per file,
+# giving the 13 that microMS's own loadXEO skips. The footer is 12.
+
 XEO_HEADER = [
-    '<?xml version="1.0" encoding="utf-8"?>',
-    '<PlateSpotFile>',
-    '  <FileFormatVersion>1.0</FileFormatVersion>',
-    '  <PlateTypeName>MTP Slide Adapter II</PlateTypeName>',
-    '  <PlateTypeID>MTP Slide Adapter II</PlateTypeID>',
-    '  <Comment>Generated by microMS_beadtargeting.py</Comment>',
-    '  <PlateGeometry>',
-    '    <UnitOriginX>0.0</UnitOriginX>',
-    '    <UnitOriginY>0.0</UnitOriginY>',
-    '    <UnitWidth>1.0</UnitWidth>',
-    '    <UnitHeight>1.0</UnitHeight>',
-    '  </PlateGeometry>',
-    '  <SpotList>',
-]                                                   # 13 lines
+    '<!-- $Revision: 1.5 $-->',
+    '<PlateType>',
+    '\t<GlobalParameters PlateTypeName="MTP Slide Adapter II" ProbeType="MTP"',
+    '\t                  RowsNumber="100" ChipNumber="1" ChipsInRow="1"',
+    '\t                  X_ChipOffsetSize="0" Y_ChipOffsetSize="0"',
+    '\t                  HasDirectLabels="false" HasColRowLabels="true"',
+    '\t                  HasNearNeighbourCalibrants="false"',
+    '\t                  ProbeDiameterX="103.5" SampleDiameter="2"',
+    '\t                  SamplePixelRadius="5" ZoomFactor="1"',
+    '\t                  FirstCalibrant="TPX1" SecondCalibrant="TPX2" '
+    'ThirdCalibrant="TPX3"',
+    '\t                  />',
+    '\t<MappingParameters mox="56.239998" moy="42.635009" sinphi="0.000000" '
+    'cosphi="1.000000" alpha="51.750000" beta="51.750000" tansigma="0.000000"/>',
+]
 
 XEO_FOOTER = [
-    '  </SpotList>',
-    '  <PlateProperties>',
-    '    <TeachPointCount>0</TeachPointCount>',
-    '    <SpotShape>Circle</SpotShape>',
-    '    <SpotDiameter>0.0</SpotDiameter>',
-    '  </PlateProperties>',
-    '  <GeneratorInfo>',
-    '    <Software>microMS_beadtargeting</Software>',
-    '    <Version>1.0</Version>',
-    '    <Note>Header UNVERIFIED against a real fleX export</Note>',
-    '  </GeneratorInfo>',
-    '</PlateSpotFile>',
-]                                                   # 12 lines
+    '\t</PlateSpots>',
+    '    \t<AutoTeachSpots>',
+    '    \t\t<PlateSpot PositionIndex="0" PositionName="TPX1" '
+    'UnitCoord_X="-0.729469" UnitCoord_Y="0.550725"/>',
+    '    \t\t<PlateSpot PositionIndex="1" PositionName="TPX2" '
+    'UnitCoord_X="0.729469" UnitCoord_Y="0.550725"/>',
+    '    \t\t<PlateSpot PositionIndex="2" PositionName="TPX3" '
+    'UnitCoord_X="0.729469" UnitCoord_Y="0.057971"/>',
+    '    \t\t<PlateSpot PositionIndex="3" PositionName="TPX4" '
+    'UnitCoord_X="-0.729469" UnitCoord_Y="0.057971"/>',
+    '    \t\t<PlateSpot PositionIndex="4" PositionName="TPY1" '
+    'UnitCoord_X="-0.729469" UnitCoord_Y="-0.057971"/>',
+    '    \t\t<PlateSpot PositionIndex="5" PositionName="TPY2" '
+    'UnitCoord_X="0.729469" UnitCoord_Y="-0.057971"/>',
+    '    \t\t<PlateSpot PositionIndex="6" PositionName="TPY3" '
+    'UnitCoord_X="-0.729469" UnitCoord_Y="-0.550725"/>',
+    '    \t\t<PlateSpot PositionIndex="7" PositionName="TPY4" '
+    'UnitCoord_X="0.729469" UnitCoord_Y="-0.550725"/>',
+    '    \t</AutoTeachSpots>',
+    '    </PlateType>',
+]
 
-assert len(XEO_HEADER) == 13 and len(XEO_FOOTER) == 12
+# Named MTP grid positions and their UnitCoord fractions, from
+# brukerMapper.py. FORMAT SPEC -- plate geometry, not a measurement.
+# UnitCoord is a SIGNED fraction about the plate centre; the header's
+# alpha and beta give the scale, 51.75 mm per unit on both axes.
+MTP_MAP_Y = {'C': 0.478261, 'D': 0.391304, 'E': 0.304348, 'F': 0.217391,
+             'G': 0.130435, 'J': -0.130435, 'K': -0.217391, 'L': -0.304348,
+             'M': -0.391304, 'N': -0.478261}
+
+MTP_MAP_X = {'5': -0.652174, '6': -0.565217, '7': -0.478261, '8': -0.391304,
+             '9': -0.304348, '10': -0.217391, '11': -0.130435,
+             '12': -0.043478, '13': 0.043478, '14': 0.130435,
+             '15': 0.217391, '16': 0.304348, '17': 0.391304, '18': 0.478261,
+             '19': 0.565217, '20': 0.652174}
+
+MTP_UNIT_MM = 51.750     # header alpha / beta
+
+
+def mtp_name_to_unit(name: str) -> tuple[float, float] | None:
+    """'C20' -> (UnitCoord_X, UnitCoord_Y). None if unparseable."""
+    row, col = name[0].upper(), name[1:]
+    if row in MTP_MAP_Y and col in MTP_MAP_X:
+        return MTP_MAP_X[col], MTP_MAP_Y[row]
+    return None
 
 
 def fit_mtp(cfg: dict) -> Transform | None:
     """
-    Second, stacked registration: stage microns -> plate FRACTION.
+    Stage microns -> UnitCoord, the signed plate fraction a .xeo uses.
 
-    UnitCoord_X/Y in a .xeo are fractions of the plate, not microns.
-    Without three measured named MTP positions there is no defensible
-    conversion, so this returns None and the .xeo is skipped.
+    UnitCoord is NOT microns and NOT a 0-1 fraction. It runs about
+    -0.73 to +0.73 in X and -0.55 to +0.55 in Y, measured from the
+    plate centre, and the header's alpha/beta give the scale as
+    51.75 mm per unit on both axes.
+
+    The fractions of the named MTP grid positions are fixed plate
+    geometry and are built in. What has to be measured on the
+    instrument is the STAGE COORDINATE of two or more of those named
+    positions -- exactly the file microMS keeps as
+    <mapper>Coords.txt, e.g.
+
+        C20  -23215  -13605
+        C5   -90705  -13715
+        G20  -23190  -31610
+        G5   -90680  -31715
+
+    Config entries mirror that:
+
+        {"name": "C20", "x_um": -23215, "y_um": -13605}
     """
     cal = cfg.get("mtp_calibration") or []
-    if len(cal) < 3:
+    if len(cal) < 2:
         return None
-    src = np.array([[c["x_um"], c["y_um"]] for c in cal], float)
-    dst = np.array([[c["unit_x"], c["unit_y"]] for c in cal], float)
-    M = fit_similarity(src, dst, allow_reflection=True)
 
-    # A similarity fit assumes UnitCoord_X and UnitCoord_Y share one
-    # scale. If they are instead normalised independently to plate
-    # width and height, a non-square plate makes that assumption wrong
-    # and the residual below will be large. Three points cannot
-    # distinguish the two cases any other way, so it is reported
-    # rather than silently absorbed.
+    src, dst, bad = [], [], []
+    for c in cal:
+        unit = mtp_name_to_unit(str(c["name"]))
+        if unit is None:
+            bad.append(c["name"])
+            continue
+        src.append([float(c["x_um"]), float(c["y_um"])])
+        dst.append(list(unit))
+
+    if bad:
+        print(f"\nWARNING: unrecognised MTP position name(s): {bad}. "
+              f"Rows are C-G and J-N, columns 5-20.")
+    if len(src) < 2:
+        return None
+
+    src, dst = np.array(src, float), np.array(dst, float)
+    if len(src) == 2:
+        # Two points fix scale, rotation and translation for a
+        # similarity fit exactly. microMS ships four.
+        M = fit_similarity(np.vstack([src, src.mean(0)]),
+                           np.vstack([dst, dst.mean(0)]),
+                           allow_reflection=True)
+    else:
+        M = fit_similarity(src, dst, allow_reflection=True)
+
     res = np.linalg.norm(M.px_to_um(src) - dst, axis=1)
-    span = float(np.linalg.norm(dst.max(0) - dst.min(0))) or 1.0
-    print(f"\nMTP fit        : {len(cal)} positions, "
-          f"max residual {res.max():.5f} unit "
-          f"({100 * res.max() / span:.2f}% of span)")
-    if res.max() / span > 0.01:
-        print("  WARNING: poor fit. UnitCoord_X/Y may be normalised "
-              "independently to\n  plate width and height, which a uniform "
-              "scale cannot represent. Measure\n  a 4th position and check "
-              "before trusting these coordinates.")
+    mm_per_unit = MTP_UNIT_MM
+    print(f"\nMTP fit        : {len(src)} named positions, "
+          f"max residual {res.max():.6f} unit "
+          f"({res.max() * mm_per_unit * 1000:.0f} um)")
+    print(f"  recovered scale {1 / M.um_per_px / 1000:.3f} mm per unit "
+          f"(header declares {mm_per_unit:.3f})")
+    if abs(1 / M.um_per_px / 1000 - mm_per_unit) > 0.5:
+        print("  WARNING: recovered scale disagrees with the header. Check "
+              "the measured\n  stage coordinates and the position names.")
     return M
-
-
-def xeo_coords(cfg: dict, shots: list[Shot],
-               M: "Transform | None") -> tuple[np.ndarray, str]:
-    """
-    Coordinates to write into the .xeo, and a label for the mode used.
-
-    Two routes:
-
-    "mtp"      A fitted stage-um -> plate-fraction transform, from
-               three measured named MTP positions. Use this when you
-               have real UnitCoord values out of a flexImaging export.
-
-    "adapter"  Stage microns converted straight to adapter units. The
-               unit is 10 um, derived from Dr. Neumann's reference run
-               file: the two slide bands sit 2623 units apart, which
-               is the 26.2 mm slide pitch of a two-slide adapter, and
-               each region is 448 x 295 units, a 4.48 x 2.95 mm kidney
-               section.
-
-               The origin defaults to the stage origin. That is an
-               assumption, not a measurement -- so the coordinate range
-               is printed next to the reference file's range, and a
-               mismatch is visible immediately.
-    """
-    pts = (np.array([[s.x_um, s.y_um] for s in shots], float)
-           if shots else np.zeros((0, 2)))
-
-    if M is not None:
-        return (M.px_to_um(pts) if len(pts) else pts), "mtp"
-
-    nc = cfg["output"].get("name-coordinates") or {}
-    unit = float(nc.get("unit-um", 10))
-    x0 = float(nc.get("x0-um") or 0.0)
-    y0 = float(nc.get("y0-um") or 0.0)
-    sx = -1.0 if nc.get("flip-x", False) else 1.0
-    sy = -1.0 if nc.get("flip-y", False) else 1.0
-
-    if not len(pts):
-        return pts, "adapter"
-    out = np.column_stack([sx * (pts[:, 0] - x0) / unit,
-                           sy * (pts[:, 1] - y0) / unit])
-    return out, "adapter"
 
 
 def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
               cfg: dict, M: "Transform | None" = None) -> list[Path]:
-    """Write .xeo files, splitting at the 400-position autoXecute cap."""
+    """
+    Write .xeo files, splitting at the 400-position autoXecute cap.
+
+    Spot lines follow microMS's writeXEO exactly, including the
+    PositionName convention x_<X>y_<Y>, which is what lets microMS's
+    own loadXEO read the file back and recover pixel positions.
+
+    Returns [] when there is no MTP calibration: UnitCoord cannot be
+    computed without it, and a file with wrong coordinates would load
+    cleanly and fire in the wrong place.
+    """
+    if M is None:
+        print("\nSKIPPED .xeo: mtp_calibration is empty.\n"
+              "  UnitCoord is a signed plate fraction, not microns. It needs\n"
+              "  the stage coordinates of two or more named MTP positions\n"
+              "  (C20, C5, G20, G5 ...) measured on the instrument. The CSV\n"
+              "  is still written.")
+        return []
+
     written = []
     chunks = [shots[i:i + XEO_MAX_POSITIONS]
               for i in range(0, len(shots), XEO_MAX_POSITIONS)] or [[]]
 
     for n, chunk in enumerate(chunks, start=1):
-        unit, _mode = xeo_coords(cfg, chunk, M)
+        pts = (np.array([[s.x_um, s.y_um] for s in chunk], float)
+               if chunk else np.zeros((0, 2)))
+        unit = M.px_to_um(pts) if len(pts) else pts
 
-        body = []
+        body = ['\t<PlateSpots PositionNumber="{}">'.format(len(chunk))]
         for k, (s, u) in enumerate(zip(chunk, unit)):
-            # Same name the .run will reference; the two files are
-            # matched by name alone.
-            name = position_name(cfg, (n - 1) * XEO_MAX_POSITIONS + k, s)
             body.append(
-                f'    <Spot ID="{k + 1}" SpotName="{name}" '
-                f'PositionName="{name}" '
-                f'UnitCoord_X="{u[0]:.6f}" UnitCoord_Y="{u[1]:.6f}" />')
+                '\t\t<PlateSpot PositionIndex="{0}" '
+                'PositionName="{1}" UnitCoord_X="{2:.6f}" '
+                'UnitCoord_Y="{3:.6f}"/>'.format(
+                    k, position_name(cfg, (n - 1) * XEO_MAX_POSITIONS + k, s),
+                    u[0], u[1]))
 
         out = prefix.with_name(f"{prefix.name}_{n:03d}.xeo")
         out.write_text("\n".join(XEO_HEADER + body + XEO_FOOTER) + "\n")
@@ -1162,33 +1215,6 @@ def _xml_escape(v: str) -> str:
              .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def stage_to_adapter(cfg: dict, x_um: float, y_um: float) -> tuple[int, int]:
-    """
-    Stage microns -> whole adapter units, as they appear in a position
-    name.
-
-    Requires the adapter origin, which is the stage reading at adapter
-    (0, 0). That is one measurement on the instrument: drive to a
-    known named position, read the stage, and subtract.
-
-    The scale itself is not fitted -- the reference run file pins it
-    at 10 um per unit on both axes.
-    """
-    nc = cfg["output"].get("name-coordinates") or {}
-    unit = float(nc.get("unit-um", 10))
-    # None means the stage origin and the adapter origin are assumed
-    # to coincide. `run` prints the resulting coordinate range next to
-    # the reference file's, so a wrong origin is visible immediately
-    # rather than silently baked into the output.
-    x0 = float(nc.get("x0-um") or 0.0)
-    y0 = float(nc.get("y0-um") or 0.0)
-
-    sx = -1.0 if nc.get("flip-x", False) else 1.0
-    sy = -1.0 if nc.get("flip-y", False) else 1.0
-    return (int(round(sx * (x_um - x0) / unit)),
-            int(round(sy * (y_um - y0) / unit)))
-
-
 def position_name(cfg: dict, index: int, shot) -> str:
     """
     Name for one position, shared by the .xeo and the .run.
@@ -1198,20 +1224,11 @@ def position_name(cfg: dict, index: int, shot) -> str:
     seen in the reference run file.
     """
     out = cfg["output"]
-    nc = out.get("name-coordinates") or {}
 
-    if nc.get("enabled", False):
-        # X and Y carry the position, exactly as the instrument's own
-        # run file does.
-        i, j = stage_to_adapter(cfg, shot.x_um, shot.y_um)
-    else:
-        # Sequential placeholders. Fine only if the paired .xeo
-        # supplies the coordinates and nothing else parses the name.
-        i, j = index + 1, 1
-
-    pattern = out.get("position-name", "R{region:02d}X{i}Y{j}")
+    pattern = out.get("position-name", "x_{px:.0f}y_{py:.0f}")
     return pattern.format(region=out.get("region", 0),
-                          i=i, j=j, n=index + 1,
+                          n=index + 1, i=index + 1, j=1,
+                          px=shot.x_px, py=shot.y_px,
                           bead=shot.bead_id, angle=int(shot.angle_deg))
 
 
@@ -2104,7 +2121,7 @@ def run(cfg: dict) -> None:
 
     log(f"placing {len(cfg['laser-shot-angles'])} shots per accepted bead, "
         f"crater {footprint_um(cfg):.0f} um")
-    shots = place_shots(beads, cfg)
+    shots = place_shots(beads, cfg, T)
     log(f"{len(shots)} shot positions generated")
     ordered = serpentine(beads, shots) if cfg["output"].get(
         "serpentine-order", True) else [s for s in shots if not s.dropped]
@@ -2142,13 +2159,11 @@ def run(cfg: dict) -> None:
 
     if cfg["output"].get("write-xeo", True) and ordered:
         M = fit_mtp(cfg)
-        coords, mode = xeo_coords(cfg, ordered, M)
-
         files = write_xeo(prefix, ordered, beads, cfg, M)
         for f in files:
             print(f"Wrote {f.name}  ({len(read_xeo(f))} positions)")
 
-        if cfg["output"].get("write-run", True):
+        if files and cfg["output"].get("write-run", True):
             names = [position_name(cfg, i, sh) for i, sh in enumerate(ordered)]
             for idx, f in enumerate(files):
                 s0 = idx * XEO_MAX_POSITIONS
@@ -2156,27 +2171,6 @@ def run(cfg: dict) -> None:
                                names[s0:s0 + XEO_MAX_POSITIONS], cfg)
                 print(f"Wrote {rp.name}  ({len(read_run(rp))} positions)"
                       f"  geometry={rp.stem}")
-
-        if mode == "adapter":
-            nc = cfg["output"].get("name-coordinates") or {}
-            print(f"\nCoordinates    : adapter units "
-                  f"({nc.get('unit-um', 10)} um each), origin "
-                  f"({nc.get('x0-um') or 0}, {nc.get('y0-um') or 0}) um")
-            print(f"  written range  X {coords[:, 0].min():.0f} to "
-                  f"{coords[:, 0].max():.0f}   "
-                  f"Y {coords[:, 1].min():.0f} to {coords[:, 1].max():.0f}")
-            print("  reference run  X 1868 to 7162   Y 1308 to 4801")
-            print("  If those ranges do not overlap the origin is wrong. Set")
-            print("  CONFIG output name-coordinates x0-um / y0-um to the "
-                  "stage")
-            print("  reading at adapter (0,0).")
-        else:
-            print("\nCoordinates    : plate fractions from mtp_calibration")
-
-        print("\nbaseGeometry matches a real run file. The .xeo XML wrapper "
-              "is still")
-        print("  unverified -- diff a genuine flexImaging export before "
-              "acquiring.")
 
 
 
@@ -2383,15 +2377,17 @@ def selftest() -> None:
     print(f"   {len(shots)} placed, {len(live)} survive validation")
 
     print("7. .xeo split and round-trip")
+    # microMS's shipped ultrafleXtreme calibration
     cfg["mtp_calibration"] = [
-        {"name": "A1", "x_um": 0, "y_um": 0, "unit_x": 0.0, "unit_y": 0.0},
-        {"name": "X1", "x_um": 75000, "y_um": 0, "unit_x": 1.0, "unit_y": 0.0},
-        {"name": "A9", "x_um": 0, "y_um": 25000, "unit_x": 0.0,
-         "unit_y": 0.3333},
+        {"name": "C20", "x_um": -23215, "y_um": -13605},
+        {"name": "C5", "x_um": -90705, "y_um": -13715},
+        {"name": "G20", "x_um": -23190, "y_um": -31610},
+        {"name": "G5", "x_um": -90680, "y_um": -31715},
     ]
     M = fit_mtp(cfg)
     assert M is not None
-    fake = [Shot(0, 0, 100.0 * i, 200.0) for i in range(950)]
+    fake = [Shot(0, 0, -50000.0 + i, -20000.0, float(i), 0.0)
+            for i in range(950)]
     tmp = HERE / "_selftest"
     files = write_xeo(tmp, fake, beads, cfg, M)
     counts = [len(read_xeo(f)) for f in files]

@@ -20,6 +20,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import microMS_beadtargeting as M  # noqa: E402
 
+# microMS ships this for the ultrafleXtreme: named MTP position, then
+# the stage coordinate measured on that instrument.
+REAL_CAL = [
+    {"name": "C20", "x_um": -23215, "y_um": -13605},
+    {"name": "C5",  "x_um": -90705, "y_um": -13715},
+    {"name": "G20", "x_um": -23190, "y_um": -31610},
+    {"name": "G5",  "x_um": -90680, "y_um": -31715},
+]
+
 
 # ---------------------------------------------------------------------
 # fixtures
@@ -250,19 +259,9 @@ def test_save_fiducials_round_trips(tmp_path):
 # .xeo export
 # ---------------------------------------------------------------------
 
-def test_header_and_footer_line_counts_are_locked():
-    """microMS reads positions with lines[13:-12]."""
-    assert len(M.XEO_HEADER) == 13
-    assert len(M.XEO_FOOTER) == 12
-
 
 def test_xeo_splits_at_400_and_round_trips(cfg, tmp_path):
-    cfg["mtp_calibration"] = [
-        {"name": "A", "x_um": 0, "y_um": 0, "unit_x": 0.0, "unit_y": 0.0},
-        {"name": "B", "x_um": 75000, "y_um": 0, "unit_x": 1.0, "unit_y": 0.0},
-        {"name": "C", "x_um": 0, "y_um": 25000, "unit_x": 0.0,
-         "unit_y": 0.3333},
-    ]
+    cfg["mtp_calibration"] = REAL_CAL
     mtp = M.fit_mtp(cfg)
     assert mtp is not None
 
@@ -392,12 +391,7 @@ def test_well_spread_fiducials_are_not_flagged():
 
 def test_run_and_xeo_use_identical_names(cfg, tmp_path):
     """autoXecute matches the two files by name alone."""
-    cfg["mtp_calibration"] = [
-        {"name": "A", "x_um": 0, "y_um": 0, "unit_x": 0.0, "unit_y": 0.0},
-        {"name": "B", "x_um": 75000, "y_um": 0, "unit_x": 1.0, "unit_y": 0.0},
-        {"name": "C", "x_um": 0, "y_um": 25000, "unit_x": 0.0,
-         "unit_y": 0.3333},
-    ]
+    cfg["mtp_calibration"] = REAL_CAL
     shots = [M.Shot(i // 4, 90 * (i % 4), 100.0 * i, 200.0) for i in range(5)]
     xeo = M.write_xeo(tmp_path / "t", shots, [], cfg, M.fit_mtp(cfg))[0]
 
@@ -428,78 +422,15 @@ def test_run_uses_crlf_like_the_reference_file(cfg, tmp_path):
     assert b"\n" not in raw.replace(b"\r\n", b"")
 
 
-def test_position_name_pattern_is_configurable(cfg):
-    cfg["output"]["position-name"] = "B{bead:04d}_A{angle:03d}"
-    assert M.position_name(cfg, 0, M.Shot(29, 90, 0, 0)) == "B0029_A090"
-
 
 # ---------------------------------------------------------------------
 # coordinate-encoded position names
 # ---------------------------------------------------------------------
 
-def test_names_encode_adapter_coordinates(cfg):
-    """X and Y in a position name are physical, not sequential."""
-    cfg["output"]["name-coordinates"] = {
-        "enabled": True, "unit-um": 10, "x0-um": 0.0, "y0-um": 0.0,
-        "flip-x": False, "flip-y": False}
-    shot = M.Shot(0, 0, 44870.0, 44240.0)      # 10 um units -> 4487, 4424
-    assert M.position_name(cfg, 0, shot) == "R00X4487Y4424"
 
 
-def test_adapter_origin_offsets_the_name(cfg):
-    cfg["output"]["name-coordinates"] = {
-        "enabled": True, "unit-um": 10, "x0-um": 1000.0, "y0-um": 2000.0,
-        "flip-x": False, "flip-y": False}
-    assert M.stage_to_adapter(cfg, 44870.0, 44240.0) == (4387, 4224)
 
 
-def test_axis_flip_is_supported(cfg):
-    cfg["output"]["name-coordinates"] = {
-        "enabled": True, "unit-um": 10, "x0-um": 0.0, "y0-um": 0.0,
-        "flip-x": False, "flip-y": True}
-    assert M.stage_to_adapter(cfg, 1000.0, 1000.0) == (100, -100)
-
-
-def test_missing_origin_defaults_to_stage_origin(cfg):
-    """None means the stage and adapter origins are assumed to
-    coincide. `run` prints the resulting coordinate range beside the
-    reference file's, so a wrong origin shows up there rather than
-    blocking the export."""
-    cfg["output"]["name-coordinates"] = {"enabled": True, "unit-um": 10}
-    assert M.stage_to_adapter(cfg, 1000.0, 2000.0) == (100, 200)
-
-
-def test_xeo_writes_without_mtp_calibration(cfg, tmp_path):
-    """The .xeo used to be gated behind three measured MTP positions
-    nobody had, so it never got written."""
-    cfg["mtp_calibration"] = []
-    assert M.fit_mtp(cfg) is None
-
-    shots = [M.Shot(0, a, 44870.0 + a, 44240.0) for a in (0, 90, 180, 270)]
-    files = M.write_xeo(tmp_path / "t", shots, [], cfg, None)
-    assert len(files) == 1
-    assert len(M.read_xeo(files[0])) == 4
-
-    coords, mode = M.xeo_coords(cfg, shots, None)
-    assert mode == "adapter"
-    assert coords[0][0] == pytest.approx(4487.0)
-
-
-def test_mtp_calibration_overrides_adapter_units(cfg):
-    cfg["mtp_calibration"] = [
-        {"name": "A", "x_um": 0, "y_um": 0, "unit_x": 0.0, "unit_y": 0.0},
-        {"name": "B", "x_um": 75000, "y_um": 0, "unit_x": 1.0, "unit_y": 0.0},
-        {"name": "C", "x_um": 0, "y_um": 25000, "unit_x": 0.0,
-         "unit_y": 0.3333},
-    ]
-    shots = [M.Shot(0, 0, 37500.0, 0.0)]
-    _, mode = M.xeo_coords(cfg, shots, M.fit_mtp(cfg))
-    assert mode == "mtp"
-
-
-def test_sequential_naming_still_available(cfg):
-    cfg["output"]["name-coordinates"] = {"enabled": False}
-    assert M.position_name(cfg, 0, M.Shot(0, 0, 999.0, 999.0)) == "R00X1Y1"
 
 
 # ---------------------------------------------------------------------
@@ -537,3 +468,67 @@ def test_hiding_does_not_change_export(cfg, transform):
     # hiding is a dict in the GUI closure; nothing touches bead state
     assert [b.accepted for b in beads] == before
     assert all(not b.accepted for b in beads)   # each blocks the other
+
+
+# ---------------------------------------------------------------------
+# .xeo format, against microMS's own writer
+# ---------------------------------------------------------------------
+
+def test_header_and_footer_match_microms():
+    """12 header lines plus the per-file <PlateSpots> line gives the 13
+    that microMS's loadXEO skips."""
+    assert len(M.XEO_HEADER) == 12
+    assert len(M.XEO_FOOTER) == 12
+    assert 'PlateTypeName="MTP Slide Adapter II"' in M.XEO_HEADER[2]
+    assert 'alpha="51.750000"' in M.XEO_HEADER[11]
+    assert M.XEO_FOOTER[-1].strip() == "</PlateType>"
+
+
+def test_mtp_names_resolve_to_plate_fractions():
+    assert M.mtp_name_to_unit("C20") == (0.652174, 0.478261)
+    assert M.mtp_name_to_unit("G5") == (-0.652174, 0.130435)
+    assert M.mtp_name_to_unit("ZZ") is None
+
+
+def test_real_calibration_recovers_the_header_scale(cfg, capsys):
+    """51.75 mm per unit is declared by alpha/beta in the header."""
+    cfg["mtp_calibration"] = REAL_CAL
+    mtp = M.fit_mtp(cfg)
+    assert mtp is not None
+    mm_per_unit = 1 / mtp.um_per_px / 1000
+    assert abs(mm_per_unit - M.MTP_UNIT_MM) < 0.5
+
+
+def test_unitcoord_stays_in_plate_range(cfg):
+    """UnitCoord is a signed fraction about the plate centre, roughly
+    +/-0.73 in X and +/-0.55 in Y -- not microns."""
+    cfg["mtp_calibration"] = REAL_CAL
+    mtp = M.fit_mtp(cfg)
+    shots = [M.Shot(0, 0, -50000.0, -20000.0)]
+    u = mtp.px_to_um(np.array([[s.x_um, s.y_um] for s in shots]))
+    assert abs(u[0][0]) < 0.8 and abs(u[0][1]) < 0.6
+
+
+def test_xeo_is_skipped_without_calibration(cfg, tmp_path):
+    cfg["mtp_calibration"] = []
+    assert M.fit_mtp(cfg) is None
+    assert M.write_xeo(tmp_path / "t", [M.Shot(0, 0, 0, 0)], [], cfg,
+                       None) == []
+
+
+def test_position_name_follows_microms(cfg):
+    """microMS's loadXEO parses x_<X>y_<Y> back into pixel positions."""
+    shot = M.Shot(0, 0, 1000.0, 2000.0, x_px=123.4, y_px=567.8)
+    assert M.position_name(cfg, 0, shot) == "x_123y_568"
+
+
+def test_xeo_round_trips_through_the_microms_slice(cfg, tmp_path):
+    cfg["mtp_calibration"] = REAL_CAL
+    shots = [M.Shot(i, 0, -50000.0 + i, -20000.0, x_px=i, y_px=i)
+             for i in range(950)]
+    files = M.write_xeo(tmp_path / "t", shots, [], cfg, M.fit_mtp(cfg))
+    # 12 header lines + the per-file <PlateSpots> line = the 13 that
+    # microMS's loadXEO skips, leaving exactly the spot lines.
+    assert [len(M.read_xeo(f)) for f in files] == [400, 400, 150]
+    assert all(l.strip().startswith("<PlateSpot ")
+               for l in M.read_xeo(files[0]))
