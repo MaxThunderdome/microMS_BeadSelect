@@ -207,15 +207,43 @@ def test_one_shot_per_angle(cfg, transform):
     assert len(shots) == len(cfg["laser-shot-angles"]) * 3
 
 
-def test_shots_outside_slide_bounds_are_dropped(cfg, transform):
-    cfg["slide-bounds"] = {"x_min": 0, "x_max": 1, "y_min": 0, "y_max": 1}
+def test_no_software_travel_limit(cfg, transform):
+    """There is no slide-bounds check. It was invented, it is not a
+    real constraint, and it silently discarded every shot in a run.
+    The stage enforces its own limits in hardware."""
     beads = [M.Bead(1000, 1200, 8.2)]
     M.to_stage(beads, transform)
     M.isolation_filter(beads, cfg["min-bead-separation"])
     M.shape_filter(beads, cfg)
+
     shots = M.place_shots(beads, cfg)
-    assert shots and all(s.dropped for s in shots)
-    assert all("bounds" in s.drop_reason for s in shots)
+    assert shots
+    assert not any(s.dropped for s in shots)
+    assert "slide-bounds" not in cfg
+
+
+def test_config_has_no_invented_coordinate_window():
+    assert "slide-bounds" not in M.CONFIG
+
+
+def test_fiducials_come_from_the_module():
+    cfg = M.load_config()
+    assert cfg["fiducials"] == [dict(f) for f in M.FIDUCIALS]
+
+
+def test_save_fiducials_round_trips(tmp_path):
+    """`pick` writes the block back into the source file."""
+    src = tmp_path / "mod.py"
+    src.write_text("HEADER = 1\nFIDUCIALS = [\n]\nFOOTER = 2\n")
+    M.save_fiducials([{"x_px": 1.0, "y_px": 2.0,
+                       "x_um": 3.0, "y_um": 4.0}], src)
+    text = src.read_text()
+    assert "HEADER = 1" in text and "FOOTER = 2" in text
+
+    ns = {}
+    exec(text, ns)
+    assert ns["FIDUCIALS"] == [{"x_px": 1.0, "y_px": 2.0,
+                                "x_um": 3.0, "y_um": 4.0}]
 
 
 # ---------------------------------------------------------------------

@@ -8,7 +8,6 @@
 # reproducible environment, replace >= with ==.
 
 numpy>=1.24            # tested 2.4.4   -- arrays, Umeyama fit
-PyYAML>=6.0            # tested 6.0.3   -- laser_setup.yaml
 scipy>=1.10            # tested 1.17.1  -- cKDTree nearest-neighbour
 
 # Required for every command except 'check'.
@@ -23,12 +22,12 @@ matplotlib>=3.7        # tested 3.10.8  -- interactive windows, overlay
 # Which command needs what
 #
 #   convert   numpy, opencv
-#   pick      numpy, pyyaml, opencv, matplotlib
-#   select    all five
-#   check     numpy, pyyaml            (no image is opened)
-#   run       all five, unless output.overlay and output.zoom are both
-#             false, in which case matplotlib is not needed
-#   selftest  numpy, pyyaml, scipy, opencv
+#   pick      numpy, opencv, matplotlib
+#   select    all four
+#   check     numpy                    (no image is opened)
+#   run       all four, unless output overlay and zoom are both off,
+#             in which case matplotlib is not needed
+#   selftest  numpy, scipy, opencv
 #
 # Python 3.10 or newer. The source uses PEP 604 unions (X | None) and
 # PEP 585 generics (list[dict]) without a __future__ guard on the

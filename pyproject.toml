@@ -5,15 +5,14 @@ description = "Image-guided MALDI-MSI targeting of SPPS resin beads on ITO slide
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
-    "PyYAML>=6.0",
     "scipy>=1.10",
     "opencv-python>=4.8",
     "matplotlib>=3.7",
 ]
 
-# Deliberately a single script plus a config file, not a package.
-# A collaborating PI runs this and should never open a .py file.
-# See CLAUDE.md before restructuring.
+# Deliberately a single script, not a package. Configuration is the
+# CONFIG dict at the top of that file. See CLAUDE.md before
+# restructuring.
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]

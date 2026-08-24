@@ -6,8 +6,8 @@ microMS_beadtargeting.py
 Image-guided MALDI-MSI targeting of SPPS resin beads on ITO slides,
 for a Bruker timsTOF fleX.
 
-Every tunable parameter lives in laser_setup.yaml. Do not edit this
-file to change geometry.
+Every tunable parameter lives in the CONFIG dict near the top of
+this file.
 
 The workflow ordering, the point-based similarity registration, the
 nearest-neighbour distance filter and the fiducial click-training
@@ -47,11 +47,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-import yaml
 from scipy.spatial import cKDTree
 
 HERE = Path(__file__).resolve().parent
-CONFIG_PATH = HERE / "laser_setup.yaml"
+CONFIG_PATH = Path(__file__).resolve()
 
 XEO_MAX_POSITIONS = 400          # autoXecute per-file cap
 
@@ -94,7 +93,7 @@ def banner(cmd: str) -> None:
         log(f"script dir  {HERE}")
         log(f"config      {CONFIG_PATH}"
             f"{'' if CONFIG_PATH.exists() else '   MISSING'}")
-        for mod in ("numpy", "yaml", "scipy", "cv2", "matplotlib"):
+        for mod in ("numpy", "scipy", "cv2", "matplotlib"):
             try:
                 m = __import__(mod)
                 log(f"{mod:11s} {getattr(m, '__version__', '?')}")
@@ -106,66 +105,238 @@ def banner(cmd: str) -> None:
 # CONFIG
 # =====================================================================
 
-def load_config(path: Path = CONFIG_PATH) -> dict:
-    if not path.exists():
-        sys.exit(f"Config not found: {path}\n"
-                 f"laser_setup.yaml must sit beside "
-                 f"microMS_beadtargeting.py.")
-    log(f"reading {path.name}")
-    try:
-        with open(path) as fh:
-            cfg = yaml.safe_load(fh)
-    except yaml.YAMLError as e:
-        sys.exit(f"laser_setup.yaml is not valid YAML:\n  {e}")
-    if not isinstance(cfg, dict):
-        sys.exit(f"laser_setup.yaml did not parse to a mapping.")
+# Filled in by:  python microMS_beadtargeting.py pick
+# x_px/y_px = pixel in the scan.  x_um/y_um = stage reading in microns.
+#
+# Do not reuse these across sessions once the slide has been remounted:
+# repositioning shows up as a systematic error at every target.
+FIDUCIALS = [
+]
 
-    required = ["laser-shot-angles", "shot-placement", "min-bead-separation",
-                "bead-diameter", "fiducials"]
-    missing = [k for k in required if k not in cfg]
-    if missing:
-        sys.exit(f"laser_setup.yaml is missing required keys: {missing}")
+
+# Every tunable lives in CONFIG. Edit it directly; nothing else in the
+# file needs changing to alter geometry, filtering or output.
+#
+# Distances are MICRONS unless the key says otherwise.
+#
+# Values that must be measured on the instrument are None. Nothing
+# guesses them -- the writer refuses instead, because a plausible wrong
+# constant produces a file that loads cleanly and fires in the wrong
+# place.
+
+CONFIG = {
+
+    # ---- input -------------------------------------------------------
+    "input": {
+        # Scan of the MATRIX-COATED slide. TIFF, not JPEG. Fiducials
+        # must be visible in it.
+        "scan": "slide01.tif",
+        # Optional bead list (x_px,y_px,diameter_px) instead of
+        # detecting. None to detect.
+        "beads": None,
+    },
+
+    # ---- bead geometry -----------------------------------------------
+    "bead-diameter": 90,
+    "bead-diameter-tolerance": 0.35,
+
+    # Isolation filter, centre to centre, run against EVERY detected
+    # object including debris. A bead beside a speck of dust is not
+    # isolated, and shape-filtering first would delete the dust and let
+    # the bead falsely pass.
+    "min-bead-separation": 150,
+
+    # ---- shot pattern ------------------------------------------------
+    # Counter-clockwise from +x (image right).
+    "laser-shot-angles": [0, 90, 180, 270],
+
+    "shot-placement": {
+        # "edge"   each bead's own measured radius + edge-offset
+        # "center" fixed laser-distance from every bead centre
+        #
+        # Measured diameter is threshold-dependent and not yet reliable
+        # on these slides, so "center" ignores it entirely.
+        "distance-reference": "center",
+        "edge-offset": 15,
+        "laser-distance": 60,
+        # "edge" only: clamp so one bad measurement cannot fling shots
+        # across the slide.
+        "min-radius": 25,
+        "max-radius": 70,
+    },
+
+    # Laser footprint. Affects ONLY the crater-overlap check; it moves
+    # no shot. UNVERIFIED -- confirm with the instrument operator.
+    "focal-spot-um": 10,
+    "beam-scan": True,
+    "beam-scan-um": 20,
+
+    # Drop a shot whose crater would overlap the bead itself or a
+    # neighbour. Genuine overlap only, never a cosmetic margin.
+    "enforce-bead-clearance": True,
+
+    # ---- registration -------------------------------------------------
+    # Similarity, not affine: an affine fit through exactly 3 fiducials
+    # is exactly determined and reports a meaningless zero residual.
+    "allow-reflection": True,
+    "max-fiducial-residual-um": 25,
+
+    # ---- detection ----------------------------------------------------
+    "detection": {
+        # Beads are usually darker than matrix, and detection
+        # thresholds for bright objects, so invert.
+        "invert": True,
+
+        # "flatfield" subtracts a large-kernel median then takes
+        #             connected components; handles the illumination
+        #             and matrix drift of a real slide.
+        # "blob"      OpenCV SimpleBlobDetector; assumes a flat
+        #             background.
+        "method": "flatfield",
+
+        # Restrict detection to one slide, in PIXELS, e.g.
+        #   {"x0": 800, "y0": 3450, "x1": 6900, "y1": 5500}
+        # None searches the whole image, and dark mounting hardware
+        # then inverts to bright and floods the object list.
+        "roi": None,
+
+        "min-circularity": 0.70,
+        # blob method only; flatfield uses min-solidity below.
+        "min-convexity": 0.80,
+
+        # Clump screening. Touching beads merge into ONE component, so
+        # a clump arrives as a single object with nothing near it and
+        # passes isolation cleanly. A clump is MARKED, not deleted, so
+        # nearby singles still fail isolation against it.
+        "screen-clumps": True,
+        "max-aspect-ratio": 1.8,
+        "min-solidity": 0.90,
+        "clump-core-fraction": 0.62,
+
+        # flatfield only
+        "background-kernel-px": 101,
+        "threshold": 6,
+        # blob only
+        "threshold-step": 10,
+
+        # Loose pre-filter in pixels, before the micron size filter.
+        # Generous on purpose: the isolation filter needs to see debris.
+        "min-diameter-px": 4,
+        "max-diameter-px": 30,
+    },
+
+    # ---- output --------------------------------------------------------
+    "output": {
+        "prefix": "targets",
+        "serpentine-order": True,
+        "write-xeo": False,
+        "overlay": True,
+        "overlay-show": False,
+        "zoom": True,
+        "zoom-window-px": 700,
+        "zoom-scale": 3,
+
+        # The .xeo holds coordinates; the .run is the ordered list of
+        # position NAMES autoXecute executes, resolving them through
+        # geometry -> <stem>.xeo. Both are written together and their
+        # names must match exactly.
+        "write-run": True,
+        "position-name": "R{region:02d}X{i}Y{j}",
+        "region": 0,
+        "chip": 0,
+
+        # X and Y in a position name are PHYSICAL ADAPTER COORDINATES
+        # in whole units, not sequence numbers. From the reference run
+        # file one unit is 10 um, on both axes.
+        #
+        # Needs the adapter origin: the stage reading at adapter (0,0).
+        # Drive to a known named position, read the stage, subtract.
+        "name-coordinates": {
+            "enabled": False,
+            "unit-um": 10,
+            "x0-um": None,      # MEASURE
+            "y0-um": None,      # MEASURE
+            "flip-x": False,
+            "flip-y": False,
+        },
+
+        # Copied into the .run header; everything else defaults to the
+        # reference file. "type" is FastImaging there, which rastered
+        # tissue -- we fire discrete positions, so confirm it.
+        "run": {
+            "acqMethod": "D:\\Methods\\your_method.m",
+            "directory": "D:\\Data\\beads",
+            "sampleName": "beadrun",
+            "type": "FastImaging",
+        },
+    },
+
+    # Manual overrides from the selection window, matched by pixel
+    # position because detection indices shift when parameters change.
+    "manual-selection": {"match-radius-px": 12},
+
+    # ---- MTP calibration -------------------------------------------------
+    # UnitCoord_X/Y in a .xeo are FRACTIONS OF THE PLATE, not microns.
+    # Fit from three named MTP grid positions measured on YOUR
+    # instrument with YOUR adapter seated, each paired with its
+    # UnitCoord read out of a real flexImaging export. Spread them
+    # across the plate.
+    #
+    #   {"name": "A1", "x_um": ..., "y_um": ...,
+    #    "unit_x": ..., "unit_y": ...},
+    #
+    # Empty means the CSV is still written and the .xeo is skipped.
+    "mtp_calibration": [],
+}
+
+
+def load_config(path=None) -> dict:
+    """Return a validated working copy of CONFIG."""
+    import copy
+    cfg = copy.deepcopy(CONFIG)
+    cfg["fiducials"] = [dict(f) for f in FIDUCIALS]
 
     if not cfg["laser-shot-angles"]:
         sys.exit("laser-shot-angles is empty; nothing to fire.")
 
     ref = cfg["shot-placement"].get("distance-reference")
     if ref not in ("edge", "center"):
-        sys.exit(f"shot-placement.distance-reference must be "
+        sys.exit(f"shot-placement['distance-reference'] must be "
                  f"'edge' or 'center', got {ref!r}")
-    log(f"config OK: {len(cfg.get('fiducials') or [])} fiducials, "
-        f"{len(cfg.get('mtp_calibration') or [])} MTP positions, "
-        f"reference={ref}")
+
+    log(f"config OK: {len(cfg['fiducials'])} fiducials, "
+        f"{len(cfg['mtp_calibration'])} MTP positions, reference={ref}")
     return cfg
 
 
-def save_fiducials(fids: list[dict], path: Path = CONFIG_PATH) -> None:
-    """Rewrite only the fiducials: block, leaving all comments intact."""
+def save_fiducials(fids: list[dict], path: Path = None) -> None:
+    """
+    Rewrite the FIDUCIALS block in this file.
+
+    Fiducials are the one setting produced by clicking rather than
+    typing, so `pick` writes them back into the source. Everything
+    around the block is left untouched.
+    """
+    path = path or Path(__file__).resolve()
     lines = path.read_text().splitlines()
 
     start = next((i for i, ln in enumerate(lines)
-                  if ln.startswith("fiducials:")), None)
+                  if ln.startswith("FIDUCIALS = [")), None)
     if start is None:
-        sys.exit("Could not find a 'fiducials:' key in laser_setup.yaml")
+        sys.exit(f"Could not find the FIDUCIALS block in {path.name}")
+    end = next((i for i, ln in enumerate(lines)
+                if i > start and ln.startswith("]")), None)
+    if end is None:
+        sys.exit(f"FIDUCIALS block in {path.name} is not closed")
 
-    end = start + 1
-    while end < len(lines):
-        ln = lines[end]
-        if ln.strip() == "" or (ln[0] not in " -"):
-            break
-        end += 1
+    block = ["FIDUCIALS = ["]
+    for f in fids:
+        block.append('    {"x_px": %.2f, "y_px": %.2f, '
+                     '"x_um": %.2f, "y_um": %.2f},'
+                     % (f["x_px"], f["y_px"], f["x_um"], f["y_um"]))
+    block.append("]")
 
-    if fids:
-        block = ["fiducials:"]
-        for f in fids:
-            block += [f"  - x_px: {f['x_px']:.2f}",
-                      f"    y_px: {f['y_px']:.2f}",
-                      f"    x_um: {f['x_um']:.2f}",
-                      f"    y_um: {f['y_um']:.2f}"]
-    else:
-        block = ["fiducials: []"]
-
-    path.write_text("\n".join(lines[:start] + block + lines[end:]) + "\n")
+    path.write_text("\n".join(lines[:start] + block + lines[end + 1:]) + "\n")
 
 
 def footprint_um(cfg: dict) -> float:
@@ -680,7 +851,6 @@ def shot_radius(bead: Bead, cfg: dict) -> float:
 def place_shots(beads: list[Bead], cfg: dict) -> list[Shot]:
     angles = [float(a) for a in cfg["laser-shot-angles"]]
     crater = footprint_um(cfg)
-    bounds = cfg["slide-bounds"]
     enforce = cfg.get("enforce-bead-clearance", True)
 
     all_pts = np.array([[b.x_um, b.y_um] for b in beads], float) \
@@ -698,11 +868,10 @@ def place_shots(beads: list[Bead], cfg: dict) -> list[Shot]:
             s = Shot(i, a, b.x_um + R * math.cos(rad),
                      b.y_um + R * math.sin(rad))
 
-            if not (bounds["x_min"] <= s.x_um <= bounds["x_max"] and
-                    bounds["y_min"] <= s.y_um <= bounds["y_max"]):
-                s.dropped, s.drop_reason = True, "outside slide bounds"
-
-            elif enforce and (R - crater / 2.0) < (b.diameter_um / 2.0):
+            # No software travel-limit check. The stage enforces its
+            # own limits in hardware; a guessed coordinate window here
+            # silently discarded entire target lists.
+            if enforce and (R - crater / 2.0) < (b.diameter_um / 2.0):
                 s.dropped, s.drop_reason = True, "crater overlaps own bead"
 
             elif enforce and tree is not None:
@@ -1189,7 +1358,7 @@ def pick_fiducials(cfg: dict) -> None:
         Remove nearest             delete the fiducial nearest the
                                    last right-click
         Reset                      clear the list
-        close the window           write laser_setup.yaml
+        close the window           write FIDUCIALS into this file
 
     Coordinate entry is IN THE WINDOW, not the terminal. An earlier
     version prompted with input() from inside the click callback,
@@ -1530,7 +1699,7 @@ def cli_convert(argv: list[str]) -> None:
             src = HERE / src
     else:
         src = HERE / load_config()["input"]["scan"]
-        say("No input given, using input.scan from laser_setup.yaml")
+        say("No input given, using CONFIG input scan")
 
     if not src.exists():
         sys.exit(f"Not found: {src}")
@@ -1979,7 +2148,7 @@ def doctor() -> None:
     say(f"writable      {os.access(HERE, os.W_OK)}")
 
     say("\n--- packages ---")
-    need = {"numpy": "numpy", "yaml": "PyYAML", "scipy": "scipy",
+    need = {"numpy": "numpy", "scipy": "scipy",
             "cv2": "opencv-python", "matplotlib": "matplotlib"}
     for mod, pkg in need.items():
         try:
@@ -2002,16 +2171,19 @@ def doctor() -> None:
         pass
 
     say("\n--- config ---")
-    if not CONFIG_PATH.exists():
-        say(f"laser_setup.yaml  MISSING at {CONFIG_PATH}")
-        say("\nSTOP: nothing else can be checked.")
-        return
     try:
         cfg = load_config()
     except SystemExit as e:
-        say(f"laser_setup.yaml  INVALID: {e}")
+        say(f"CONFIG  INVALID: {e}")
         return
-    say(f"laser_setup.yaml  OK")
+    say("CONFIG  OK")
+    sp = cfg["shot-placement"]
+    say(f"placement         {sp['distance-reference']}"
+        + (f"   ({sp['laser-distance']} um from centre)"
+           if sp['distance-reference'] == 'center'
+           else f"   (measured radius + {sp['edge-offset']} um)"))
+    roi = cfg["detection"].get("roi")
+    say(f"detection roi     {roi if roi else 'whole image'}")
 
     nf = len(cfg.get("fiducials") or [])
     say(f"fiducials         {nf}"

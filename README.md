@@ -3,8 +3,8 @@
 Image-guided MALDI-MSI targeting of SPPS resin beads on ITO slides, for a
 Bruker timsTOF fleX.
 
-Two files. `laser_setup.yaml` holds every tunable parameter and is the only
-file that should need editing. `microMS_beadtargeting.py` is the pipeline.
+One file. `microMS_beadtargeting.py` holds the pipeline and, at the top, a
+`CONFIG` dict with every tunable parameter.
 
 The workflow ordering, the point-based similarity registration, the
 nearest-neighbour distance filter and the fiducial click-training interaction
@@ -26,16 +26,15 @@ pip install -r requirements.txt
 Repository layout:
 
 ```
-microMS_beadtargeting.py   the pipeline -- one file, on purpose
-laser_setup.yaml           every tunable parameter
+microMS_beadtargeting.py   the pipeline, with CONFIG at the top
 tests/test_pipeline.py     pytest suite (22 tests, no instrument needed)
 CLAUDE.md                  constraints and invariants for Claude Code
 ATTRIBUTION.md             microMS citation and the copy boundary
 MANUAL_COVERAGE.md         what we take from the microMS guide, and what we skip
 ```
 
-Python 3.10 or newer. `requirements.txt` lists which command needs which
-package — `check` needs no image libraries at all.
+Python 3.10 or newer, and four packages. `requirements.txt` lists which command
+needs which — `check` needs no image libraries at all.
 
 ---
 
@@ -89,15 +88,22 @@ wrong.
 Note the scanner's µm/px. You never type it in, but you will compare it against
 the scale the registration recovers, and a mismatch means something is wrong.
 
-## 2. Edit `laser_setup.yaml`
+## 2. Edit `CONFIG`
 
-Set `input.scan`. Under `detection`, set `invert: true` if beads are darker
-than the matrix background — they usually are. Blob detection thresholds for
-*bright* objects, so without inverting it will find background instead of
-beads.
+At the top of `microMS_beadtargeting.py`. Set `input["scan"]`. Under
+`detection`, keep `invert: True` if beads are darker than the matrix background
+— they usually are; thresholding is for *bright* objects, so without inverting
+it finds background instead of beads. Set `detection["roi"]` to the slide you
+want, in pixels, or dark mounting hardware inverts to bright and floods the
+object list.
 
-Check `bead-diameter`, `min-bead-separation`, and the `shot-placement` block
-(below). Leave `output.write-xeo: false` for now.
+Check `bead-diameter`, `min-bead-separation` and `shot-placement`. Leave
+`output["write-xeo"]` False until MTP calibration is measured.
+
+**There is no software travel-limit check.** An earlier version had a
+`slide-bounds` window with values I invented; on a real stage every shot fell
+outside it and the target list came out empty with no error. The stage enforces
+its own limits in hardware, so that check is gone rather than re-guessed.
 
 ## 3. Record fiducial stage coordinates
 
@@ -115,7 +121,7 @@ Opens the scan. Coordinate entry is **in the window**, not the terminal.
 | **Add fiducial** | commit the pair |
 | **Remove nearest** | delete the fiducial nearest the last right-click |
 | **Reset** | clear the list |
-| close the window | write into `laser_setup.yaml` |
+| close the window | write `FIDUCIALS` into the source file |
 
 Enter in the stage y box also commits, so entry can be keyboard-only.
 
@@ -136,8 +142,9 @@ stay clear of both mouse buttons.
 
 
 The worst-fitting fiducial is drawn red and live RMS sits in the title, so a
-mistyped coordinate shows up while you are still in the window. Your comments in
-the YAML survive the rewrite, and registration is reported on close.
+mistyped coordinate shows up while you are still in the window. Only the
+`FIDUCIALS` block is rewritten; everything around it is untouched, and
+registration is reported on close.
 
 If matplotlib is on a non-interactive backend the command exits with a message
 rather than opening nothing — check with:
@@ -163,9 +170,9 @@ residual is a lower bound on true error, not an estimate of it.
 
 **Do not reuse fiducials across sessions once the slide has been removed and
 reinserted.** The microMS guide is explicit about this: repositioning the sample
-shows up as a systematic error at every target, and because our fiducials sit in
-`laser_setup.yaml` they are trivially reusable, which makes the mistake easy.
-Re-pick after any remount.
+shows up as a systematic error at every target, and because `FIDUCIALS` persists
+in the source file, reusing them is the path of least resistance. Re-pick after
+any remount.
 
 ## 6. `python microMS_beadtargeting.py select` — bead manual selection
 

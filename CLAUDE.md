@@ -9,22 +9,17 @@ Bruker timsTOF fleX. It detects beads in a scan of a matrix-coated slide,
 keeps only isolated single beads, places laser shots on clean matrix just off
 each bead edge, and exports coordinates for flexImaging / autoXecute.
 
-Two user-facing files:
-
-- `microMS_beadtargeting.py` — the whole pipeline, deliberately one file
-- `laser_setup.yaml` — every tunable parameter
+One user-facing file: `microMS_beadtargeting.py`, holding the whole pipeline
+and a `CONFIG` dict of every tunable parameter at the top.
 
 ## Hard constraints
 
-**Do not split the pipeline into modules.** A collaborating PI (Dr. Elizabeth
-Neumann, UC Davis) runs this and should never have to open a `.py` file. One
-script plus one config is the design, not an accident. Add functions, not
-packages.
+**Do not split the pipeline into modules.** One script is the design, not an
+accident. Add functions, not packages.
 
-**Every tunable belongs in `laser_setup.yaml`.** If you add a magic number to
-the source, you have introduced a bug. Read it from config with a sensible
-default and document it in the YAML with a comment saying what it does and
-when to change it.
+**Every tunable belongs in `CONFIG`.** If you add a magic number further down
+the file, you have introduced a bug. Put it in `CONFIG` with a comment saying
+what it does and when to change it.
 
 **Never guess a physical constant.** These values are unmeasured and must stay
 flagged as such until someone reads them off the instrument:
@@ -69,8 +64,15 @@ fiducials is exactly determined and reports a residual of zero, which tells the
 operator nothing. The similarity fit leaves a real residual. Do not "improve"
 this to affine.
 
-**Shots are dropped only on genuine crater overlap** or for leaving
-`slide-bounds`. Never trim shots to satisfy a cosmetic clearance margin.
+**Shots are dropped only on genuine crater overlap.** Never trim shots to
+satisfy a cosmetic clearance margin.
+
+**There is no software travel-limit check, and none should be added.** A
+`slide-bounds` window existed with invented values; on a real stage every shot
+fell outside it and `run` wrote an empty target list and exited 0. The stage
+enforces its own limits in hardware. If a bounds check is ever genuinely needed,
+the numbers must come from the instrument, not from a plausible-looking
+default.
 
 **`UnitCoord_X/Y` in `.xeo` are plate fractions, not microns.** There are two
 stacked transforms: scan px → stage µm (fiducials), then stage µm → plate
