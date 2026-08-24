@@ -111,6 +111,13 @@ def banner(cmd: str) -> None:
 # Do not reuse these across sessions once the slide has been remounted:
 # repositioning shows up as a systematic error at every target.
 FIDUCIALS = [
+    # The four corners of the two-slide array. Stage microns measured
+    # on the fleX; pixel positions are yours to click in `pick`.
+    # x_px/y_px below are placeholders and WILL be wrong for your scan.
+    # {"x_px": 0, "y_px": 0, "x_um": 18601.5, "y_um": -20310.8},   top left
+    # {"x_px": 0, "y_px": 0, "x_um": 86083.1, "y_um": -20161.0},   top right
+    # {"x_px": 0, "y_px": 0, "x_um": 18646.7, "y_um": -69830.8},   bottom left
+    # {"x_px": 0, "y_px": 0, "x_um": 86124.7, "y_um": -69700.2},   bottom right
 ]
 
 
@@ -293,35 +300,32 @@ CONFIG = {
     #
     # Either point this at such a file:
     #
+    # ---- MTP calibration ------------------------------------------
+    # UnitCoord in a .xeo is a SIGNED plate fraction: about +/-0.729 in
+    # X and +/-0.551 in Y, measured from the plate centre. The header's
+    # alpha/beta give the scale, 51.75 mm per unit on both axes.
+    #
+    # The fractions of the named MTP grid positions are fixed plate
+    # geometry and are built in (MTP_MAP_X / MTP_MAP_Y). Only the STAGE
+    # COORDINATES of those positions are instrument specific.
+    #
+    # MEASURED on the timsTOF fleX: the four corners of the two-slide
+    # array. Converted to UnitCoord about their own centre they land
+    # within 0.0012 of C5/C20/N5/N20 -- about 60 um on a 75 mm plate --
+    # so these corners ARE the MTP grid corners, not an approximation:
+    #
+    #   top left     -0.652415 +0.477100    C5  -0.652174 +0.478261
+    #   top right    +0.651577 +0.479994    C20 +0.652174 +0.478261
+    #   bottom left  -0.651542 -0.479809    N5  -0.652174 -0.478261
+    #   bottom right +0.652381 -0.477285    N20 +0.652174 -0.478261
+    #
+    # A microMS <mapper>Coords.txt path works too:
     #     "mtp_calibration": "flexCoords.txt",
-    #
-    # or list the positions inline:
-    #
-    #     {"name": "C20", "x_um": -23215, "y_um": -13605},
-    #
-    # MEASURING IT ON THE fleX, which takes about five minutes and
-    # needs nobody else:
-    #   1. Load the slide adapter.
-    #   2. In flexControl / timsControl, drive to a named MTP position
-    #      -- click it on the plate view, or type the name.
-    #   3. Read the stage x,y and write it down.
-    #   4. Repeat for a second position diagonally opposite. Two is
-    #      enough; four is better and gives a residual worth reading.
-    #
-    # Rows are C-G and J-N, columns 5-20. Values are negative on the
-    # ultrafleXtreme and positive on the solariX -- sign is per
-    # instrument, so record what the stage actually reads. Empty means
-    # the CSV is written and the .xeo is skipped.
     "mtp_calibration": [
-        # >>> DEMO VALUES -- microMS's shipped ultrafleXtreme file. <<<
-        # >>> NOT the timsTOF fleX. Coordinates will be wrong.      <<<
-        # >>> Present so the .xeo writes and the FORMAT can be      <<<
-        # >>> tested in flexImaging. Replace with stage coordinates <<<
-        # >>> measured on the fleX before any acquisition.          <<<
-        {"name": "C20", "x_um": -23215, "y_um": -13605},
-        {"name": "C5", "x_um": -90705, "y_um": -13715},
-        {"name": "G20", "x_um": -23190, "y_um": -31610},
-        {"name": "G5", "x_um": -90680, "y_um": -31715},
+        {"name": "C5",  "x_um": 18601.5, "y_um": -20310.8},
+        {"name": "C20", "x_um": 86083.1, "y_um": -20161.0},
+        {"name": "N5",  "x_um": 18646.7, "y_um": -69830.8},
+        {"name": "N20", "x_um": 86124.7, "y_um": -69700.2},
     ],
 }
 
