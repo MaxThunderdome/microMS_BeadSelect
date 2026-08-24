@@ -240,12 +240,23 @@ CONFIG = {
         # position NAMES autoXecute executes, resolving them through
         # geometry -> <stem>.xeo. Both are written together and their
         # names must match exactly.
+        # flexImaging target list in stage coordinates. Needs no MTP
+        # calibration -- the fiducial registration is enough, and the
+        # fiducial rows let flexImaging register the slide itself.
+        "write-flex-txt": True,
+        "flex-region": "01",
+        "flex-negate-y": True,
+
         "write-run": True,
         # microMS's own convention. Its loadXEO parses this back into
         # pixel positions, so a file written here can be reopened in
         # microMS. Change it only if something downstream needs a
         # different scheme.
-        "position-name": "x_{px:.0f}y_{py:.0f}",
+        # None picks the convention matching fiducial-units:
+        # R<region>X<x>Y<y> in plate units, as the instrument
+        # names its own positions.
+        "position-name": None,
+        "flip-y": False,
         "region": 0,
         "chip": 0,
 
@@ -280,13 +291,27 @@ CONFIG = {
     #     G20  -23190  -31610
     #     G5   -90680  -31715
     #
-    # so entries here are:
+    # Either point this at such a file:
+    #
+    #     "mtp_calibration": "flexCoords.txt",
+    #
+    # or list the positions inline:
     #
     #     {"name": "C20", "x_um": -23215, "y_um": -13605},
     #
-    # Rows are C-G and J-N, columns 5-20. Note the values are NEGATIVE
-    # on that instrument. Empty means the CSV is written and the .xeo
-    # is skipped.
+    # MEASURING IT ON THE fleX, which takes about five minutes and
+    # needs nobody else:
+    #   1. Load the slide adapter.
+    #   2. In flexControl / timsControl, drive to a named MTP position
+    #      -- click it on the plate view, or type the name.
+    #   3. Read the stage x,y and write it down.
+    #   4. Repeat for a second position diagonally opposite. Two is
+    #      enough; four is better and gives a residual worth reading.
+    #
+    # Rows are C-G and J-N, columns 5-20. Values are negative on the
+    # ultrafleXtreme and positive on the solariX -- sign is per
+    # instrument, so record what the stage actually reads. Empty means
+    # the CSV is written and the .xeo is skipped.
     "mtp_calibration": [
         # >>> DEMO VALUES -- microMS's shipped ultrafleXtreme file. <<<
         # >>> NOT the timsTOF fleX. Coordinates will be wrong.      <<<
@@ -442,6 +467,22 @@ def loo_residuals(src, dst, allow_reflection=True) -> np.ndarray | None:
         Ti = fit_similarity(src[keep], dst[keep], allow_reflection)
         out[i] = np.linalg.norm(Ti.px_to_um(src[i])[0] - dst[i])
     return out
+
+
+def to_microns(T: Transform, cfg: dict) -> Transform:
+    """
+    Rescale a fitted transform so it outputs MICRONS.
+
+    With fiducial-units "plate" the fit lands in plate units of 10 um.
+    Everything downstream -- min-bead-separation, bead diameter, shot
+    distance, crater overlap -- is in microns, so the scaling happens
+    once here and the export converts back. Filtering in plate units
+    made every bead fail isolation.
+    """
+    if cfg.get("fiducial-units", "plate") != "plate":
+        return T
+    k = PLATE_UNIT_UM
+    return Transform(T.scale * k, T.R, T.t * k)
 
 
 def transform_from_config(cfg: dict) -> Transform:
@@ -1040,6 +1081,53 @@ MTP_MAP_X = {'5': -0.652174, '6': -0.565217, '7': -0.478261, '8': -0.391304,
 MTP_UNIT_MM = 51.750     # header alpha / beta
 
 
+# =====================================================================
+# PLATE COORDINATES  (MTP Slide Adapter II)
+#
+# Derived entirely from constants already in this file plus the
+# reference run file. Nothing here is measured or assumed.
+#
+#   brukerMapper's header declares alpha = beta = 51.750 mm per
+#   UnitCoord, and its AutoTeachSpots put the teach points at
+#   UnitCoord_X = +/-0.729469 and UnitCoord_Y = +/-0.550725.
+#
+#   2 x 0.729469 x 51.750 mm = 75.500 mm
+#   2 x 0.550725 x 51.750 mm = 57.000 mm
+#
+# Exact round numbers: the adapter is 75.5 x 57.0 mm, i.e. 7550 x 5700
+# units of 10 um. Every position in Dr Neumann's run file falls inside
+# that box (X 1868-7162 of 7550, Y 1308-4801 of 5700), and the gap
+# between its two slide bands converts to 26.23 mm -- the slide pitch
+# of a two-slide adapter.
+#
+# So a position name R<region>X<x>Y<y> carries plate position directly,
+# and UnitCoord follows from constants alone. No stage calibration and
+# no MTP coordinate file are needed for this path.
+# =====================================================================
+
+PLATE_UNIT_UM = 10.0
+TEACH_X = 0.729469          # brukerMapper AutoTeachSpots
+TEACH_Y = 0.550725
+PLATE_X_UNITS = 2 * TEACH_X * MTP_UNIT_MM * 1000 / PLATE_UNIT_UM   # 7550
+PLATE_Y_UNITS = 2 * TEACH_Y * MTP_UNIT_MM * 1000 / PLATE_UNIT_UM   # 5700
+
+
+def plate_to_unitcoord(x_units: float, y_units: float,
+                       flip_y: bool = False) -> tuple[float, float]:
+    """Plate units (as in a position name) -> UnitCoord for a .xeo."""
+    ux = x_units / PLATE_X_UNITS * 2 * TEACH_X - TEACH_X
+    uy = y_units / PLATE_Y_UNITS * 2 * TEACH_Y - TEACH_Y
+    return ux, (-uy if flip_y else uy)
+
+
+def unitcoord_to_plate(ux: float, uy: float,
+                       flip_y: bool = False) -> tuple[float, float]:
+    if flip_y:
+        uy = -uy
+    return ((ux + TEACH_X) / (2 * TEACH_X) * PLATE_X_UNITS,
+            (uy + TEACH_Y) / (2 * TEACH_Y) * PLATE_Y_UNITS)
+
+
 def mtp_name_to_unit(name: str) -> tuple[float, float] | None:
     """'C20' -> (UnitCoord_X, UnitCoord_Y). None if unparseable."""
     row, col = name[0].upper(), name[1:]
@@ -1073,6 +1161,24 @@ def fit_mtp(cfg: dict) -> Transform | None:
         {"name": "C20", "x_um": -23215, "y_um": -13605}
     """
     cal = cfg.get("mtp_calibration") or []
+
+    # A microMS <mapper>Coords.txt can be used directly. Same file
+    # brukerMapper.loadStagePoints reads: name<TAB>x<TAB>y.
+    if isinstance(cal, str):
+        path = Path(cal)
+        if not path.is_absolute():
+            path = HERE / path
+        if not path.exists():
+            sys.exit(f"mtp_calibration file not found: {path}")
+        rows = []
+        for line in path.read_text().splitlines():
+            t = line.replace("\t", " ").split()
+            if len(t) >= 3:
+                rows.append({"name": t[0], "x_um": float(t[1]),
+                             "y_um": float(t[2])})
+        log(f"read {len(rows)} MTP positions from {path.name}")
+        cal = rows
+
     if len(cal) < 2:
         return None
 
@@ -1119,22 +1225,32 @@ def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
     """
     Write .xeo files, splitting at the 400-position autoXecute cap.
 
-    Spot lines follow microMS's writeXEO exactly, including the
-    PositionName convention x_<X>y_<Y>, which is what lets microMS's
-    own loadXEO read the file back and recover pixel positions.
+    Header, footer and the <PlateSpot .../> line follow microMS's
+    brukerMapper.writeXEO (MIT).
 
-    Returns [] when there is no MTP calibration: UnitCoord cannot be
-    computed without it, and a file with wrong coordinates would load
-    cleanly and fire in the wrong place.
+    Two routes to UnitCoord:
+
+    "plate"  fiducials were given as the plate position the instrument
+             displays, so shot positions are already plate units and
+             UnitCoord is a fixed rescaling of them. Needs no
+             calibration file.
+
+    "stage"  fiducials were raw motor microns, so mtp_calibration must
+             supply the motor -> UnitCoord fit.
     """
-    if M is None:
-        print("\nSKIPPED .xeo: mtp_calibration is empty.\n"
-              "  UnitCoord is a signed plate fraction, not microns. It needs\n"
-              "  the stage coordinates of two or more named MTP positions\n"
-              "  (C20, C5, G20, G5 ...) measured on the instrument. The CSV\n"
-              "  is still written.")
+    plate_mode = cfg.get("fiducial-units", "plate") == "plate"
+
+    if not plate_mode and M is None:
+        print("\nSKIPPED .xeo: fiducial-units is 'stage' and "
+              "mtp_calibration is empty.\n"
+              "  UnitCoord is a signed plate fraction, not microns. Either\n"
+              "  set fiducial-units to 'plate' and enter fiducials as the\n"
+              "  position the instrument displays, or supply the stage\n"
+              "  coordinates of two named MTP positions. The CSV is still\n"
+              "  written.")
         return []
 
+    flip = bool(cfg["output"].get("flip-y", False))
     written = []
     chunks = [shots[i:i + XEO_MAX_POSITIONS]
               for i in range(0, len(shots), XEO_MAX_POSITIONS)] or [[]]
@@ -1142,7 +1258,14 @@ def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
     for n, chunk in enumerate(chunks, start=1):
         pts = (np.array([[s.x_um, s.y_um] for s in chunk], float)
                if chunk else np.zeros((0, 2)))
-        unit = M.px_to_um(pts) if len(pts) else pts
+        if not len(pts):
+            unit = pts
+        elif plate_mode:
+            unit = np.array([plate_to_unitcoord(x / PLATE_UNIT_UM,
+                                                y / PLATE_UNIT_UM, flip)
+                             for x, y in pts], float)
+        else:
+            unit = M.px_to_um(pts)
 
         body = ['\t<PlateSpots PositionNumber="{}">'.format(len(chunk))]
         for k, (s, u) in enumerate(zip(chunk, unit)):
@@ -1163,6 +1286,57 @@ def read_xeo(path: Path) -> list[str]:
     """microMS's position slice: 13 header lines, 12 footer lines."""
     return path.read_text().splitlines()[13:-12]
 
+
+
+# =====================================================================
+# EXPORT -- flexImaging .txt
+#
+# FORMAT SPEC, from microMS's flexImagingSolarix.saveInstrumentFile.
+#
+# This path needs NO MTP calibration. The .xeo route has to convert
+# stage microns into UnitCoord plate fractions, which requires the
+# stage coordinates of named MTP positions. This one writes stage
+# coordinates directly and lets flexImaging do its own registration
+# from the fiducial rows written at the top of the file.
+#
+# Everything it needs is already known: the fiducial registration.
+#
+#   # X-pos Y-pos spot-name region
+#   -56960 22660 fiducial0 01
+#   -56901 22615 x1234_y5678 01
+#
+# Y is negated on write, as microMS does -- image y increases
+# downward, stage y increases upward.
+# =====================================================================
+
+def write_flex_txt(path: Path, shots: list[Shot], cfg: dict,
+                   T: Transform) -> Path:
+    """Write a flexImaging target list in stage coordinates."""
+    rows = ["# X-pos Y-pos spot-name region"]
+    region = str(cfg["output"].get("flex-region", "01"))
+    negate = -1.0 if cfg["output"].get("flex-negate-y", True) else 1.0
+
+    # Fiducials first, so flexImaging can register the slide itself.
+    for i, f in enumerate(cfg["fiducials"]):
+        rows.append(f"{f['x_um']:.0f} {negate * f['y_um']:.0f} "
+                    f"fiducial{i} {region}")
+
+    for sh in shots:
+        rows.append(f"{sh.x_um:.0f} {negate * sh.y_um:.0f} "
+                    f"x{sh.x_px:.0f}_y{sh.y_px:.0f} {region}")
+
+    path.write_text("\n".join(rows) + "\n")
+    return path
+
+
+def read_flex_txt(path: Path) -> list[tuple]:
+    """(x, y, name, region) per row, header skipped."""
+    out = []
+    for line in path.read_text().splitlines()[1:]:
+        t = line.split()
+        if len(t) >= 4:
+            out.append((float(t[0]), float(t[1]), t[2], t[3]))
+    return out
 
 
 # =====================================================================
@@ -1235,9 +1409,14 @@ def position_name(cfg: dict, index: int, shot) -> str:
     """
     out = cfg["output"]
 
-    pattern = out.get("position-name", "x_{px:.0f}y_{py:.0f}")
+    default = ("R{region:02d}X{i:.0f}Y{j:.0f}"
+               if cfg.get("fiducial-units", "plate") == "plate"
+               else "x_{px:.0f}y_{py:.0f}")
+    pattern = out.get("position-name") or default
     return pattern.format(region=out.get("region", 0),
-                          n=index + 1, i=index + 1, j=1,
+                          n=index + 1,
+                          i=shot.x_um / PLATE_UNIT_UM,   # plate units
+                          j=shot.y_um / PLATE_UNIT_UM,
                           px=shot.x_px, py=shot.y_px,
                           bead=shot.bead_id, angle=int(shot.angle_deg))
 
@@ -1874,7 +2053,7 @@ def bead_manual_selection(cfg: dict) -> None:
                  f"Install a GUI toolkit (pip install pyqt5) or set "
                  f"MPLBACKEND=TkAgg and try again.")
 
-    T = transform_from_config(cfg)
+    T = to_microns(transform_from_config(cfg), cfg)
     beads, scan = build_beads(cfg, T)
     auto = [b.accepted for b in beads]
 
@@ -2095,7 +2274,7 @@ def build_beads(cfg: dict, T: Transform) -> tuple[list[Bead], Path | None]:
 
 def run(cfg: dict) -> None:
     log("fitting registration from fiducials")
-    T = report_registration(cfg)
+    T = to_microns(report_registration(cfg), cfg)
     print()
     beads, scan = build_beads(cfg, T)
 
@@ -2166,6 +2345,13 @@ def run(cfg: dict) -> None:
         zp = prefix.with_name("shot_placement_zoom.png")
         if draw_zoom(zp, beads, cfg, T, scan):
             print(f"Wrote {zp.name}")
+
+    if cfg["output"].get("write-flex-txt", True) and ordered:
+        fp = prefix.with_name(prefix.name + "_flexImaging.txt")
+        write_flex_txt(fp, ordered, cfg, T)
+        print(f"Wrote {fp.name}  ({len(read_flex_txt(fp))} rows: "
+              f"{len(cfg['fiducials'])} fiducials + {len(ordered)} targets, "
+              f"stage um)")
 
     if cfg["output"].get("write-xeo", True) and ordered:
         M = fit_mtp(cfg)
