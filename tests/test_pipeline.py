@@ -576,3 +576,56 @@ def test_xeo_round_trips_through_the_microms_slice(cfg, tmp_path):
     assert [len(M.read_xeo(f)) for f in files] == [400, 400, 150]
     assert all(l.strip().startswith("<PlateSpot ")
                for l in M.read_xeo(files[0]))
+
+
+# ---------------------------------------------------------------------
+# unit-mode regressions
+# ---------------------------------------------------------------------
+
+def test_fiducial_units_key_exists_in_config():
+    """It was once absent, so to_microns silently took the plate branch
+    and multiplied every distance by 10 -- every bead then failed the
+    size filter with no error."""
+    assert "fiducial-units" in M.CONFIG
+    assert M.CONFIG["fiducial-units"] in ("stage", "plate")
+
+
+def test_stage_mode_does_not_rescale(cfg):
+    cfg["fiducial-units"] = "stage"
+    T = M.Transform(8.52, np.eye(2), np.zeros(2))
+    assert M.to_microns(T, cfg).um_per_px == pytest.approx(8.52)
+
+
+def test_plate_mode_rescales_by_ten(cfg):
+    cfg["fiducial-units"] = "plate"
+    T = M.Transform(0.852, np.eye(2), np.zeros(2))
+    assert M.to_microns(T, cfg).um_per_px == pytest.approx(8.52)
+
+
+def test_missing_key_defaults_to_stage(cfg):
+    """The safe default: stage matches the measured calibration, and a
+    wrong default here is invisible except as absurd bead diameters."""
+    cfg.pop("fiducial-units", None)
+    T = M.Transform(8.52, np.eye(2), np.zeros(2))
+    assert M.to_microns(T, cfg).um_per_px == pytest.approx(8.52)
+
+
+def test_bad_fiducial_units_is_rejected():
+    import copy
+    saved = copy.deepcopy(M.CONFIG)
+    try:
+        M.CONFIG["fiducial-units"] = "microns"
+        with pytest.raises(SystemExit):
+            M.load_config()
+    finally:
+        M.CONFIG.clear()
+        M.CONFIG.update(saved)
+
+
+def test_measured_calibration_recovers_header_scale():
+    """The four fleX slide corners fit to the alpha/beta the .xeo
+    header declares."""
+    cfg = M.load_config()
+    mtp = M.fit_mtp(cfg)
+    assert mtp is not None
+    assert abs(1 / mtp.um_per_px / 1000 - M.MTP_UNIT_MM) < 0.05

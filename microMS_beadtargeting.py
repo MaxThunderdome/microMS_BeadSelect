@@ -111,13 +111,12 @@ def banner(cmd: str) -> None:
 # Do not reuse these across sessions once the slide has been remounted:
 # repositioning shows up as a systematic error at every target.
 FIDUCIALS = [
-    # The four corners of the two-slide array. Stage microns measured
-    # on the fleX; pixel positions are yours to click in `pick`.
-    # x_px/y_px below are placeholders and WILL be wrong for your scan.
-    # {"x_px": 0, "y_px": 0, "x_um": 18601.5, "y_um": -20310.8},   top left
-    # {"x_px": 0, "y_px": 0, "x_um": 86083.1, "y_um": -20161.0},   top right
-    # {"x_px": 0, "y_px": 0, "x_um": 18646.7, "y_um": -69830.8},   bottom left
-    # {"x_px": 0, "y_px": 0, "x_um": 86124.7, "y_um": -69700.2},   bottom right
+    # The four corners of the two-slide array. Stage microns measured on
+    # the fleX; pixel positions are yours to click in `pick`.
+    # {"x_px": ?, "y_px": ?, "x_um": 18601.5, "y_um": -20310.8},  top left
+    # {"x_px": ?, "y_px": ?, "x_um": 86083.1, "y_um": -20161.0},  top right
+    # {"x_px": ?, "y_px": ?, "x_um": 18646.7, "y_um": -69830.8},  bottom left
+    # {"x_px": ?, "y_px": ?, "x_um": 86124.7, "y_um": -69700.2},  bottom right
 ]
 
 
@@ -185,6 +184,16 @@ CONFIG = {
     # ---- registration -------------------------------------------------
     # Similarity, not affine: an affine fit through exactly 3 fiducials
     # is exactly determined and reports a meaningless zero residual.
+    # What the fiducial x_um / y_um values are.
+    #
+    # "stage"  raw motor microns, as read off the instrument. This is
+    #          what the measured MTP calibration below expects, and it
+    #          is the timsTOF fleX path.
+    #
+    # "plate"  plate units of 10 um. Only for a workflow that enters
+    #          fiducials as displayed plate positions.
+    "fiducial-units": "stage",
+
     "allow-reflection": True,
     "max-fiducial-residual-um": 25,
 
@@ -205,6 +214,8 @@ CONFIG = {
         #   {"x0": 800, "y0": 3450, "x1": 6900, "y1": 5500}
         # None searches the whole image, and dark mounting hardware
         # then inverts to bright and floods the object list.
+        # MUST exclude the slide edges and adapter clamps: inverted,
+        # they become huge bright blobs and swamp the object list.
         "roi": None,
 
         "min-circularity": 0.70,
@@ -338,6 +349,10 @@ def load_config(path=None) -> dict:
 
     if not cfg["laser-shot-angles"]:
         sys.exit("laser-shot-angles is empty; nothing to fire.")
+
+    fu = cfg.get("fiducial-units", "stage")
+    if fu not in ("stage", "plate"):
+        sys.exit(f"fiducial-units must be 'stage' or 'plate', got {fu!r}")
 
     ref = cfg["shot-placement"].get("distance-reference")
     if ref not in ("edge", "center"):
@@ -483,7 +498,7 @@ def to_microns(T: Transform, cfg: dict) -> Transform:
     once here and the export converts back. Filtering in plate units
     made every bead fail isolation.
     """
-    if cfg.get("fiducial-units", "plate") != "plate":
+    if cfg.get("fiducial-units", "stage") != "plate":
         return T
     k = PLATE_UNIT_UM
     return Transform(T.scale * k, T.R, T.t * k)
@@ -1242,7 +1257,7 @@ def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
     "stage"  fiducials were raw motor microns, so mtp_calibration must
              supply the motor -> UnitCoord fit.
     """
-    plate_mode = cfg.get("fiducial-units", "plate") == "plate"
+    plate_mode = cfg.get("fiducial-units", "stage") == "plate"
 
     if not plate_mode and M is None:
         print("\nSKIPPED .xeo: fiducial-units is 'stage' and "
@@ -1414,7 +1429,7 @@ def position_name(cfg: dict, index: int, shot) -> str:
     out = cfg["output"]
 
     default = ("R{region:02d}X{i:.0f}Y{j:.0f}"
-               if cfg.get("fiducial-units", "plate") == "plate"
+               if cfg.get("fiducial-units", "stage") == "plate"
                else "x_{px:.0f}y_{py:.0f}")
     pattern = out.get("position-name") or default
     return pattern.format(region=out.get("region", 0),
