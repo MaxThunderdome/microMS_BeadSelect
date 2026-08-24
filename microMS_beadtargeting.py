@@ -287,7 +287,17 @@ CONFIG = {
     # Rows are C-G and J-N, columns 5-20. Note the values are NEGATIVE
     # on that instrument. Empty means the CSV is written and the .xeo
     # is skipped.
-    "mtp_calibration": [],
+    "mtp_calibration": [
+        # >>> DEMO VALUES -- microMS's shipped ultrafleXtreme file. <<<
+        # >>> NOT the timsTOF fleX. Coordinates will be wrong.      <<<
+        # >>> Present so the .xeo writes and the FORMAT can be      <<<
+        # >>> tested in flexImaging. Replace with stage coordinates <<<
+        # >>> measured on the fleX before any acquisition.          <<<
+        {"name": "C20", "x_um": -23215, "y_um": -13605},
+        {"name": "C5", "x_um": -90705, "y_um": -13715},
+        {"name": "G20", "x_um": -23190, "y_um": -31610},
+        {"name": "G5", "x_um": -90680, "y_um": -31715},
+    ],
 }
 
 
