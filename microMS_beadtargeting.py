@@ -111,12 +111,15 @@ def banner(cmd: str) -> None:
 # Do not reuse these across sessions once the slide has been remounted:
 # repositioning shows up as a systematic error at every target.
 FIDUCIALS = [
-    # The four corners of the two-slide array. Stage microns measured on
-    # the fleX; pixel positions are yours to click in `pick`.
+    # The corners of the two-slide array, stage microns measured on the
+    # fleX. Pixel positions are yours to click in `pick`.
     # {"x_px": ?, "y_px": ?, "x_um": 18601.5, "y_um": -20310.8},  top left
     # {"x_px": ?, "y_px": ?, "x_um": 86083.1, "y_um": -20161.0},  top right
     # {"x_px": ?, "y_px": ?, "x_um": 18646.7, "y_um": -69830.8},  bottom left
     # {"x_px": ?, "y_px": ?, "x_um": 86124.7, "y_um": -69700.2},  bottom right
+    #
+    # Four corners is the minimum. Comi et al. 2017 recommend >=12
+    # fiducials -- add etched X marks and pick those too.
 ]
 
 
@@ -151,6 +154,24 @@ CONFIG = {
     # isolated, and shape-filtering first would delete the dust and let
     # the bead falsely pass.
     "min-bead-separation": 150,
+
+    # Target localization error: the distance between where a shot was
+    # requested and where the laser actually fired.
+    #
+    # Comi et al. 2017 measured 38.3 +/- 3.9 um on a Bruker
+    # ultrafleXtreme (n = 71) and give two rules that follow from it:
+    #
+    #   probe radius    >= target localization error
+    #   distance filter >  target localization error + probe radius
+    #
+    # `run` checks both and says so. 38.3 is THEIR instrument, not the
+    # fleX -- measure yours with the burn-mark test and replace it.
+    "target-localization-error-um": 38.3,
+
+    # The paper recommends at least 12 fiducials; error falls as
+    # 1/sqrt(n), and the fiducial training set was the ONLY factor that
+    # significantly affected accuracy in their ANOVA.
+    "recommended-fiducials": 12,
 
     # ---- shot pattern ------------------------------------------------
     # Counter-clockwise from +x (image right).
@@ -569,6 +590,15 @@ def report_registration(cfg: dict) -> Transform:
         flag = "  <-- OVER LIMIT" if r > limit else ""
         print(f" {i:2d} {f['x_px']:9.1f} {f['y_px']:9.1f} "
               f"{f['x_um']:12.1f} {f['y_um']:12.1f} {r:10.2f}{flag}")
+
+    rec = int(cfg.get("recommended-fiducials", 12))
+    if len(fids) < rec:
+        factor = (rec / len(fids)) ** 0.5
+        print(f"\nNOTE: {len(fids)} fiducials. Comi et al. 2017 recommend "
+              f"at least {rec};\n  localization error falls as 1/sqrt(n), so "
+              f"this is roughly {factor:.1f}x worse\n  than {rec} would be. "
+              f"The fiducial set was the only factor that\n  significantly "
+              f"affected accuracy in their ANOVA.")
 
     loo = loo_residuals(src, dst, cfg.get("allow-reflection", True))
     if loo is None:
@@ -2310,6 +2340,27 @@ def run(cfg: dict) -> None:
                       f"biases\n  the measurement, and 'edge' placement "
                       f"inherits that bias directly. Check the overlay, "
                       f"or use\n  distance-reference: center.")
+
+    # Comi et al. 2017: probe radius >= target localization error, and
+    # distance filter > that error + probe radius.
+    tle = float(cfg.get("target-localization-error-um", 0) or 0)
+    if tle:
+        probe_r = footprint_um(cfg) / 2.0
+        sep = float(cfg["min-bead-separation"])
+        need = tle + probe_r
+        print(f"\n  target localization error : {tle:.1f} um "
+              f"(probe radius {probe_r:.1f} um)")
+        if probe_r < tle:
+            print(f"  NOTE: probe radius is smaller than the localization "
+                  f"error. Comi et al.\n  recommend the probe be at least as "
+                  f"large, so a mistargeted shot still\n  lands on the bead.")
+        if sep <= need:
+            print(f"  WARNING: min-bead-separation ({sep:.0f} um) does not "
+                  f"exceed error + probe\n  radius ({need:.0f} um). "
+                  f"Neighbouring beads may be sampled together.")
+        else:
+            print(f"  min-bead-separation {sep:.0f} um exceeds "
+                  f"{need:.0f} um: OK")
 
     n_clump = sum(b.clumped for b in beads)
     n_iso = sum(1 for b in beads

@@ -629,3 +629,21 @@ def test_measured_calibration_recovers_header_scale():
     mtp = M.fit_mtp(cfg)
     assert mtp is not None
     assert abs(1 / mtp.um_per_px / 1000 - M.MTP_UNIT_MM) < 0.05
+
+
+# ---------------------------------------------------------------------
+# Comi et al. 2017 accuracy rules
+# ---------------------------------------------------------------------
+
+def test_paper_accuracy_constants_present():
+    """probe radius >= target localization error;
+       distance filter > that error + probe radius."""
+    assert "target-localization-error-um" in M.CONFIG
+    assert "recommended-fiducials" in M.CONFIG
+    assert M.CONFIG["recommended-fiducials"] >= 12
+
+
+def test_separation_exceeds_error_plus_probe(cfg):
+    tle = float(cfg["target-localization-error-um"])
+    probe_r = M.footprint_um(cfg) / 2.0
+    assert float(cfg["min-bead-separation"]) > tle + probe_r
