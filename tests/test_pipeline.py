@@ -517,7 +517,10 @@ def test_plate_mode_writes_xeo_without_calibration(cfg, tmp_path):
     files = M.write_xeo(tmp_path / "t", [M.Shot(0, 0, 44870.0, 44240.0)],
                         [], cfg, None)
     assert len(files) == 1
-    assert len(M.read_xeo(files[0])) == 2      # PlateSpots line + 1 spot
+    # 12 header lines + the per-file <PlateSpots> line = the 13 that
+    # microMS's loadXEO skips, leaving just the spot lines.
+    assert len(M.read_xeo(files[0])) == 1
+    assert 'UnitCoord_X=' in M.read_xeo(files[0])[0]
 
 
 def test_stage_mode_still_needs_calibration(cfg, tmp_path):
