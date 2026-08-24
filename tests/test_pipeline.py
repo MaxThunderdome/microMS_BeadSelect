@@ -509,15 +509,56 @@ def test_unitcoord_stays_in_plate_range(cfg):
     assert abs(u[0][0]) < 0.8 and abs(u[0][1]) < 0.6
 
 
-def test_xeo_is_skipped_without_calibration(cfg, tmp_path):
+def test_plate_mode_writes_xeo_without_calibration(cfg, tmp_path):
+    """UnitCoord follows from plate constants, so no calibration file
+    and no stage measurement is required."""
     cfg["mtp_calibration"] = []
+    cfg["fiducial-units"] = "plate"
+    files = M.write_xeo(tmp_path / "t", [M.Shot(0, 0, 44870.0, 44240.0)],
+                        [], cfg, None)
+    assert len(files) == 1
+    assert len(M.read_xeo(files[0])) == 2      # PlateSpots line + 1 spot
+
+
+def test_stage_mode_still_needs_calibration(cfg, tmp_path):
+    cfg["mtp_calibration"] = []
+    cfg["fiducial-units"] = "stage"
     assert M.fit_mtp(cfg) is None
     assert M.write_xeo(tmp_path / "t", [M.Shot(0, 0, 0, 0)], [], cfg,
                        None) == []
 
 
-def test_position_name_follows_microms(cfg):
+def test_plate_extent_matches_the_adapter():
+    """75.5 x 57.0 mm, from alpha/beta and the teach-point extents."""
+    assert M.PLATE_X_UNITS == pytest.approx(7550, abs=0.1)
+    assert M.PLATE_Y_UNITS == pytest.approx(5700, abs=0.1)
+
+
+def test_unitcoord_round_trips_through_plate_units():
+    ux, uy = M.plate_to_unitcoord(4487, 4424)
+    assert abs(ux) <= M.TEACH_X and abs(uy) <= M.TEACH_Y
+    x, y = M.unitcoord_to_plate(ux, uy)
+    assert x == pytest.approx(4487) and y == pytest.approx(4424)
+
+
+def test_reference_run_positions_land_on_the_plate():
+    """Every position in Dr Neumann's run file is inside the adapter."""
+    for x, y in ((1868, 1308), (7162, 4801), (4487, 4424)):
+        ux, uy = M.plate_to_unitcoord(x, y)
+        assert abs(ux) <= M.TEACH_X
+        assert abs(uy) <= M.TEACH_Y
+
+
+def test_position_name_carries_plate_units(cfg):
+    """Same convention the instrument uses for its own positions."""
+    cfg["fiducial-units"] = "plate"
+    shot = M.Shot(0, 0, 44870.0, 44240.0)      # um -> 4487, 4424 units
+    assert M.position_name(cfg, 0, shot) == "R00X4487Y4424"
+
+
+def test_position_name_stage_mode_follows_microms(cfg):
     """microMS's loadXEO parses x_<X>y_<Y> back into pixel positions."""
+    cfg["fiducial-units"] = "stage"
     shot = M.Shot(0, 0, 1000.0, 2000.0, x_px=123.4, y_px=567.8)
     assert M.position_name(cfg, 0, shot) == "x_123y_568"
 
