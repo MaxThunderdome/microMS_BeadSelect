@@ -137,18 +137,22 @@ min-fiducial-spread: 0.10
 # Filled in by:  python microMS_beadtargeting.py pick
 # x_px/y_px = pixel in the scan.  x_um/y_um = stage reading in microns.
 fiducials:
-  - x_px: 400.00
-    y_px: 3300.00
-    x_um: 3896.00
-    y_um: 32142.00
-  - x_px: 5182.11
-    y_px: 5180.06
-    x_um: 1231.00
-    y_um: 12312.00
-  - x_px: 5153.43
-    y_px: 6527.77
-    x_um: 123.00
-    y_um: 123.00
+  - x_px: 263.96
+    y_px: 256.48
+    x_um: 18691.50
+    y_um: -20310.80
+  - x_px: 9656.34
+    y_px: 268.47
+    x_um: 86083.10
+    y_um: -20161.00
+  - x_px: 249.50
+    y_px: 7365.66
+    x_um: 18646.70
+    y_um: -69830.80
+  - x_px: 9629.81
+    y_px: 7370.53
+    x_um: 86124.70
+    y_um: -69700.20
 
 
 # ---------------------------------------------------------------------
@@ -186,9 +190,9 @@ detection:
     # where the speckle is debris, not beads, and it clipped the real
     # deposit at y=5500. Re-measure this per scan.
     x0: 1120
-    y0: 4850
+    y0: 1101
     x1: 9300
-    y1: 6600
+    y1: 6927
 
   min-circularity: 0.70
   min-convexity: 0.80
