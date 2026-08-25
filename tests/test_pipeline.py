@@ -853,10 +853,21 @@ def test_review_saves_picture_and_exports_nothing(cfg, tmp_path, monkeypatch):
 
     M.review(cfg)
 
-    assert (tmp_path / "targets_review.png").exists()
-    exports = [p.name for p in tmp_path.iterdir()
+    pngs = list((tmp_path / "RESULTS").glob("review_*.png"))
+    assert pngs, "review wrote no picture under RESULTS/"
+    exports = [p.name for p in tmp_path.rglob("*")
                if p.suffix in (".csv", ".xeo", ".run", ".txt")]
     assert exports == [], exports
+
+
+def test_results_dir_is_created_on_demand(cfg, tmp_path, monkeypatch):
+    """Outputs live under RESULTS, never beside the code; 'run' gets a
+    timestamped subfolder so no run overwrites another."""
+    monkeypatch.setattr(M, "HERE", tmp_path)
+    root = M.results_dir(cfg)
+    assert root == tmp_path / "RESULTS" and root.is_dir()
+    sub = M.results_dir(cfg, "run_" + M.timestamp())
+    assert sub.parent == root and sub.is_dir()
 
 
 def test_review_is_dispatched(monkeypatch):

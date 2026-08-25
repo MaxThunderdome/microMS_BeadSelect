@@ -299,6 +299,13 @@ CONFIG = {
         # 'review' opens a window showing the planned shots; set False
         # to save the picture only (headless / remote sessions).
         "review-show": True,
+        # Every generated file lands under this folder, created next
+        # to the script on demand. 'run' writes into a run_<timestamp>
+        # subfolder so successive runs never overwrite each other;
+        # 'review' writes review_<timestamp> images directly into it.
+        # flexCoords.txt stays beside the script: it doubles as an
+        # mtp_calibration input path.
+        "results-dir": "RESULTS",
         "zoom": True,
         "zoom-window-px": 700,
         "zoom-scale": 3,
@@ -2511,6 +2518,24 @@ def bead_manual_selection(cfg: dict) -> None:
 # RUN
 # =====================================================================
 
+def timestamp() -> str:
+    """File-name-safe local time, e.g. 2026-08-25_143059."""
+    from datetime import datetime
+    return datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+
+def results_dir(cfg: dict, subfolder: str | None = None) -> Path:
+    """
+    HERE/<output.results-dir>, created on demand -- the home of every
+    generated file, so outputs never mix with code and scans.
+    """
+    root = HERE / cfg["output"].get("results-dir", "RESULTS")
+    if subfolder:
+        root = root / subfolder
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def build_beads(cfg: dict, T: Transform) -> tuple[list[Bead], Path | None]:
     """
     Detect (or load) objects and run every automatic filter, in the
@@ -2637,7 +2662,9 @@ def run(cfg: dict) -> None:
         print(f"      {n:5d}  {reason}")
     print(f"  written : {len(ordered)}")
 
-    prefix = HERE / cfg["output"]["prefix"]
+    outdir = results_dir(cfg, "run_" + timestamp())
+    prefix = outdir / cfg["output"]["prefix"]
+    print(f"\nOutput folder  : {outdir.relative_to(HERE)}")
     log(f"writing outputs with prefix {prefix}")
     csv_path = prefix.with_suffix(".csv")
     write_csv(csv_path, beads, ordered)
@@ -2690,10 +2717,11 @@ def review(cfg: dict) -> None:
 
     Sits between 'select' and 'run': fits the registration, detects
     and filters beads (honouring manual_selection.csv), places shots,
-    and renders them on the scan. Saves <prefix>_review.png and, with
-    output.review-show true and a display available, opens the same
-    picture in a window. Writes NO target files -- 'run' remains the
-    only command that exports.
+    and renders them on the scan. Saves RESULTS/review_<timestamp>.png
+    plus a RESULTS/review_<timestamp>_zoom.png close-up of the densest
+    patch of selected beads, and, with output.review-show true and a
+    display available, opens the overlay in a window. Writes NO target
+    files -- 'run' remains the only command that exports.
     """
     log("fitting registration from fiducials")
     T = to_microns(transform_from_config(cfg), cfg)
@@ -2722,8 +2750,9 @@ def review(cfg: dict) -> None:
         n = sum(1 for s in shots if s.dropped and s.drop_reason == reason)
         say(f"      {n:5d}  {reason}")
 
-    prefix = HERE / cfg["output"]["prefix"]
-    png = prefix.with_name(prefix.name + "_review.png")
+    outdir = results_dir(cfg)
+    stamp = timestamp()
+    png = outdir / f"review_{stamp}.png"
     show = bool(cfg["output"].get("review-show", True))
     if show:
         import matplotlib
@@ -2733,7 +2762,12 @@ def review(cfg: dict) -> None:
                 "(see doctor)")
             show = False
     draw_overlay(png, beads, shots, cfg, T, scan, show)
-    say(f"Wrote {png.name}")
+    say(f"Wrote {png.relative_to(HERE)}")
+
+    zp = outdir / f"review_{stamp}_zoom.png"
+    if draw_zoom(zp, beads, cfg, T, scan):
+        say(f"Wrote {zp.relative_to(HERE)}  (close-up of the densest "
+            f"patch of selected beads)")
     say("Nothing exported. Run 'run' to write the target files.")
 
 
