@@ -235,15 +235,15 @@ python microMS_beadtargeting.py review
 
 `review` fits the registration, applies every filter plus your manual
 selection, places the shots, and draws them on the scan -- green accepted
-beads, blue shot craters, orange dotted for dropped shots. It saves
-`RESULTS/review_<date>_<time>.png` plus a `..._zoom.png` close-up of the
-densest patch of selected beads (and opens a window unless
-`output.review-show` is false). It exports nothing; `run` is still the only
+beads, blue shot craters, orange dotted for dropped shots. Each review
+gets its own `RESULTS/<date>_<time> review/` folder holding `review.png`
+plus `review_zoom.png`, a close-up of the densest patch of selected beads
+(a window also opens unless `output.review-show` is false). It exports nothing; `run` is still the only
 command that writes target files.
 
 ## 7. `python microMS_beadtargeting.py run`
 
-Everything `run` writes lands in `RESULTS/run_<date>_<time>/`, a fresh
+Everything `run` writes lands in `RESULTS/<date>_<time> run/`, a fresh
 timestamped folder per run, so no acquisition package ever overwrites an
 earlier one. (`flexCoords.txt` stays beside the script; it doubles as an
 `mtp_calibration` input.)

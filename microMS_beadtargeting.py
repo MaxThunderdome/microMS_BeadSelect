@@ -300,11 +300,12 @@ CONFIG = {
         # to save the picture only (headless / remote sessions).
         "review-show": True,
         # Every generated file lands under this folder, created next
-        # to the script on demand. 'run' writes into a run_<timestamp>
-        # subfolder so successive runs never overwrite each other;
-        # 'review' writes review_<timestamp> images directly into it.
-        # flexCoords.txt stays beside the script: it doubles as an
-        # mtp_calibration input path.
+        # to the script on demand. Each invocation gets its own
+        # timestamped subfolder -- "<timestamp> run" holding the full
+        # export, "<timestamp> review" holding the review images -- so
+        # nothing ever overwrites an earlier result. flexCoords.txt
+        # stays beside the script: it doubles as an mtp_calibration
+        # input path.
         "results-dir": "RESULTS",
         "zoom": True,
         "zoom-window-px": 700,
@@ -2662,7 +2663,7 @@ def run(cfg: dict) -> None:
         print(f"      {n:5d}  {reason}")
     print(f"  written : {len(ordered)}")
 
-    outdir = results_dir(cfg, "run_" + timestamp())
+    outdir = results_dir(cfg, timestamp() + " run")
     prefix = outdir / cfg["output"]["prefix"]
     print(f"\nOutput folder  : {outdir.relative_to(HERE)}")
     log(f"writing outputs with prefix {prefix}")
@@ -2717,11 +2718,12 @@ def review(cfg: dict) -> None:
 
     Sits between 'select' and 'run': fits the registration, detects
     and filters beads (honouring manual_selection.csv), places shots,
-    and renders them on the scan. Saves RESULTS/review_<timestamp>.png
-    plus a RESULTS/review_<timestamp>_zoom.png close-up of the densest
-    patch of selected beads, and, with output.review-show true and a
-    display available, opens the overlay in a window. Writes NO target
-    files -- 'run' remains the only command that exports.
+    and renders them on the scan. Saves both pictures into their own
+    "RESULTS/<timestamp> review" folder: review.png (the full overlay)
+    and review_zoom.png (a close-up of the densest patch of selected
+    beads). With output.review-show true and a display available the
+    overlay also opens in a window. Writes NO target files -- 'run'
+    remains the only command that exports.
     """
     log("fitting registration from fiducials")
     T = to_microns(transform_from_config(cfg), cfg)
@@ -2750,9 +2752,8 @@ def review(cfg: dict) -> None:
         n = sum(1 for s in shots if s.dropped and s.drop_reason == reason)
         say(f"      {n:5d}  {reason}")
 
-    outdir = results_dir(cfg)
-    stamp = timestamp()
-    png = outdir / f"review_{stamp}.png"
+    outdir = results_dir(cfg, timestamp() + " review")
+    png = outdir / "review.png"
     show = bool(cfg["output"].get("review-show", True))
     if show:
         import matplotlib
@@ -2764,7 +2765,7 @@ def review(cfg: dict) -> None:
     draw_overlay(png, beads, shots, cfg, T, scan, show)
     say(f"Wrote {png.relative_to(HERE)}")
 
-    zp = outdir / f"review_{stamp}_zoom.png"
+    zp = outdir / "review_zoom.png"
     if draw_zoom(zp, beads, cfg, T, scan):
         say(f"Wrote {zp.relative_to(HERE)}  (close-up of the densest "
             f"patch of selected beads)")

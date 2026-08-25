@@ -853,8 +853,8 @@ def test_review_saves_picture_and_exports_nothing(cfg, tmp_path, monkeypatch):
 
     M.review(cfg)
 
-    pngs = list((tmp_path / "RESULTS").glob("review_*.png"))
-    assert pngs, "review wrote no picture under RESULTS/"
+    pngs = list((tmp_path / "RESULTS").glob("* review/review.png"))
+    assert pngs, "review wrote no '<timestamp> review' folder with review.png"
     exports = [p.name for p in tmp_path.rglob("*")
                if p.suffix in (".csv", ".xeo", ".run", ".txt")]
     assert exports == [], exports
@@ -866,8 +866,9 @@ def test_results_dir_is_created_on_demand(cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(M, "HERE", tmp_path)
     root = M.results_dir(cfg)
     assert root == tmp_path / "RESULTS" and root.is_dir()
-    sub = M.results_dir(cfg, "run_" + M.timestamp())
+    sub = M.results_dir(cfg, M.timestamp() + " run")
     assert sub.parent == root and sub.is_dir()
+    assert sub.name.endswith(" run")
 
 
 def test_review_is_dispatched(monkeypatch):
