@@ -3,13 +3,8 @@
 Image-guided MALDI-MSI targeting of SPPS resin beads on ITO slides, for a
 Bruker timsTOF fleX.
 
-<<<<<<< HEAD
 One file. `microMS_beadtargeting.py` holds the pipeline and, at the top, a
 `CONFIG` dict with every tunable parameter.
-=======
-Two files. `laser_setup.yaml` holds every tunable parameter and is the only
-file that should need editing. `microMS_beadtargeting.py` is the pipeline.
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 The workflow ordering, the point-based similarity registration, the
 nearest-neighbour distance filter and the fiducial click-training interaction
@@ -31,7 +26,6 @@ pip install -r requirements.txt
 Repository layout:
 
 ```
-<<<<<<< HEAD
 microMS_beadtargeting.py   the pipeline, with CONFIG at the top
 tests/test_pipeline.py     pytest suite (22 tests, no instrument needed)
 CLAUDE.md                  constraints and invariants for Claude Code
@@ -42,17 +36,6 @@ DIVERGENCE.md              every point where this differs from microMS
 
 Python 3.10 or newer, and four packages. `requirements.txt` lists which command
 needs which — `check` needs no image libraries at all.
-=======
-microMS_beadtargeting.py   the pipeline -- one file, on purpose
-laser_setup.yaml           every tunable parameter
-tests/test_pipeline.py     pytest suite (31 tests, no instrument needed)
-CLAUDE.md                  constraints and invariants for Claude Code
-ATTRIBUTION.md             microMS citation and the copy boundary
-```
-
-Python 3.10 or newer. `requirements.txt` lists which command needs which
-package — `check` needs no image libraries at all.
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 ---
 
@@ -106,7 +89,6 @@ wrong.
 Note the scanner's µm/px. You never type it in, but you will compare it against
 the scale the registration recovers, and a mismatch means something is wrong.
 
-<<<<<<< HEAD
 ## 2. Edit `CONFIG`
 
 At the top of `microMS_beadtargeting.py`. Set `input["scan"]`. Under
@@ -123,17 +105,6 @@ Check `bead-diameter`, `min-bead-separation` and `shot-placement`. Leave
 `slide-bounds` window with values I invented; on a real stage every shot fell
 outside it and the target list came out empty with no error. The stage enforces
 its own limits in hardware, so that check is gone rather than re-guessed.
-=======
-## 2. Edit `laser_setup.yaml`
-
-Set `input.scan`. Under `detection`, set `invert: true` if beads are darker
-than the matrix background — they usually are. Blob detection thresholds for
-*bright* objects, so without inverting it will find background instead of
-beads.
-
-Check `bead-diameter`, `min-bead-separation`, and the `shot-placement` block
-(below). Leave `output.write-xeo: false` for now.
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 ## 3. Record fiducial stage coordinates
 
@@ -148,7 +119,6 @@ Opens the scan. Coordinate entry is **in the window**, not the terminal.
 |---|---|
 | right-click on the image | set the pending pixel (gold X) |
 | type into stage x / stage y | the measured stage reading |
-<<<<<<< HEAD
 | **Add fiducial** | commit the pair |
 | **Remove nearest** | delete the fiducial nearest the last right-click |
 | **Reset** | clear the list |
@@ -156,31 +126,6 @@ Opens the scan. Coordinate entry is **in the window**, not the terminal.
 
 Enter in the stage y box also commits, so entry can be keyboard-only.
 
-=======
-| **Add fiducial** | commit the pair — press it repeatedly, the label shows `n/15` |
-| **Remove nearest** | delete the fiducial nearest the last right-click |
-| **Reset** | clear the list |
-| close the window | write into `laser_setup.yaml` |
-
-Enter in the stage y box also commits, so entry can be keyboard-only.
-
-**How many to pick.** Three is the *minimum* for a similarity fit, not the
-target. With exactly three there is no spare point to hold back, so
-leave-one-out cross validation cannot run and the residual you are shown is
-in-sample — it flatters the fit and tells you almost nothing. **Pick four or
-more** whenever the slide has enough recognisable marks, and spread them across
-the slide rather than along one edge; three marks in a line leave rotation and
-scale poorly determined even when the residual looks small. The ceiling is
-`max-fiducials` in the YAML, 15 by default, and the Add button carries the
-running count so the minimum is not mistaken for a maximum.
-
-**The list is preloaded** from `laser_setup.yaml` so a session can be resumed —
-which is also a trap, because picking fresh marks on top of a stale set mixes
-the two silently. The picker now says how many it loaded, and runs the same
-sanity checks `check` does before you start. If they are stale, press
-**Reset**.
-
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 Both interactive windows zoom the same way:
 
 | action | effect |
@@ -198,14 +143,9 @@ stay clear of both mouse buttons.
 
 
 The worst-fitting fiducial is drawn red and live RMS sits in the title, so a
-<<<<<<< HEAD
 mistyped coordinate shows up while you are still in the window. Only the
 `FIDUCIALS` block is rewritten; everything around it is untouched, and
 registration is reported on close.
-=======
-mistyped coordinate shows up while you are still in the window. Your comments in
-the YAML survive the rewrite, and registration is reported on close.
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 If matplotlib is on a non-interactive backend the command exits with a message
 rather than opening nothing — check with:
@@ -229,15 +169,12 @@ genuine mirror, and `allow-reflection: true` lets the fit absorb it silently.
 With exactly three fiducials there is no cross-validation, and the in-sample
 residual is a lower bound on true error, not an estimate of it.
 
-<<<<<<< HEAD
 **Do not reuse fiducials across sessions once the slide has been removed and
 reinserted.** The microMS guide is explicit about this: repositioning the sample
 shows up as a systematic error at every target, and because `FIDUCIALS` persists
 in the source file, reusing them is the path of least resistance. Re-pick after
 any remount.
 
-=======
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 ## 6. `python microMS_beadtargeting.py select` — bead manual selection
 
 Auto filtering is a starting point, not a verdict. At low contrast the detector
@@ -259,7 +196,6 @@ operator gets the final say.
 | **Reject box** | reject every bead inside |
 | **Clear box** | drop the region selection |
 | **Reset** | discard all manual overrides |
-<<<<<<< HEAD
 | checkboxes | show or hide each colour |
 | close the window | write `manual_selection.csv` |
 
@@ -274,10 +210,6 @@ clickable and not caught by the box tools**, so you cannot toggle something you
 cannot see. The title lists any hidden category so a filtered view is never
 mistaken for the whole picture.
 
-=======
-| close the window | write `manual_selection.csv` |
-
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 The box tools are the fast path — draw around a debris field or a dense patch
 and reject the lot in one click, rather than clicking a hundred beads.
 
@@ -290,72 +222,6 @@ shift the moment any detection parameter changes. On reload each override is
 matched to the nearest detected object within `match-radius-px`; anything with
 no match is reported rather than silently dropped.
 
-<<<<<<< HEAD
-=======
-## 6b. `python microMS_beadtargeting.py review` — confirm the shots
-
-Optional, and worth doing before every acquisition. It reruns exactly
-the path `run` uses — detection, all the filters, your
-`manual_selection.csv` overrides, shot placement — but writes only
-pictures, never a target list. Nothing it does can change `targets.csv`.
-
-Output goes to its own timestamped folder, so a re-run never overwrites
-the previous answer:
-
-```
-outputs/review_2026-08-17_175717/
-    slide_overview.png                      whole slide, targeted vs not
-    shot_confirmation_..._sheet01.png       per-bead panels
-    shot_confirmation_..._sheet02.png
-```
-
-`slide_overview.png` answers "does my selection cover the deposit I
-meant?" — every targeted bead ringed green across the whole slide, with
-rejects as red dots and clumps as purple. It carries no shot pattern on
-purpose: at slide scale a 30 µm crater is a fraction of a pixel, so the
-angles would be noise.
-
-The confirmation sheets answer the different question of whether each
-bead's shots landed sensibly. Each accepted bead gets its own panel: the
-bead ringed green, its shots labelled by angle, and a caption giving the
-bead index, measured diameter, nearest-neighbour distance and how many
-shots survived.
-
-    filled blue     this shot will fire
-    hollow orange   this shot was dropped
-    orange caption  this bead will fire with fewer than the full pattern
-
-`run` already writes a whole-slide overlay and one high-magnification
-zoom, but the zoom only covers the densest patch of the slide. This
-covers **every** accepted bead and paginates past 36 rather than
-sampling, because the thing you are looking for is the single bead whose
-shots went somewhere wrong.
-
-What to look for: every shot on clean matrix rather than on the bead or
-a neighbour, four shots on most beads, and the measured diameter in the
-caption close to `bead-diameter`. A caption reading `24um` when you
-loaded 90 um beads means the registration scale is wrong — go back to
-`check`.
-
-Overview size, panel size, magnification, columns and page size are the
-`review:` block in `laser_setup.yaml`.
-
-## Where output goes
-
-Every command that writes files puts them under `outputs/`, in a folder
-named for the command and the moment it ran:
-
-```
-outputs/run_2026-08-17_175711/     targets.csv, targets_overlay.png, ...
-outputs/review_2026-08-17_175717/  slide_overview.png, confirmation sheets
-```
-
-Nothing is overwritten by a re-run, and each folder is a complete record
-of one invocation rather than files from different runs mixed together.
-Set `output.per-run-folder: false` to write straight into `outputs/` and
-overwrite in place. `outputs/` is gitignored — regenerate it any time.
-
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 ## 7. `python microMS_beadtargeting.py run`
 
 The pipeline, in this order:
@@ -505,10 +371,6 @@ python microMS_beadtargeting.py convert   # image -> TIFF
 python microMS_beadtargeting.py pick      # click fiducials -> YAML
 python microMS_beadtargeting.py select    # bead manual selection
 python microMS_beadtargeting.py check     # registration quality only
-<<<<<<< HEAD
-=======
-python microMS_beadtargeting.py review    # per-bead shot confirmation sheets
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 python microMS_beadtargeting.py run       # detect, filter, shoot, export
 python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 

@@ -16,15 +16,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-<<<<<<< HEAD
-=======
-import yaml
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import microMS_beadtargeting as M  # noqa: E402
 
-<<<<<<< HEAD
 # microMS ships this for the ultrafleXtreme: named MTP position, then
 # the stage coordinate measured on that instrument.
 REAL_CAL = [
@@ -34,8 +29,6 @@ REAL_CAL = [
     {"name": "G5",  "x_um": -90680, "y_um": -31715},
 ]
 
-=======
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 # ---------------------------------------------------------------------
 # fixtures
@@ -101,45 +94,6 @@ def test_three_fiducials_give_no_loo_estimate():
         is not None
 
 
-<<<<<<< HEAD
-=======
-def test_synthetic_fiducials_are_flagged(cfg):
-    """
-    A fiducial set generated from an exact transform fits perfectly.
-    Real clicks never do, because a similarity fit through 3 points is
-    overdetermined. Shipping such a set is the dangerous case: it
-    reports a flawless registration and fires in the wrong place.
-    """
-    src = np.array([[400.0, 3300.0], [7700.0, 3300.0], [400.0, 5650.0]])
-    dst = src * 9.74 + np.array([0.0, 0.0])
-    T = M.fit_similarity(src, dst)
-    res = M.residuals(T, src, dst)
-    assert res.max() < 1e-6                      # fits exactly, as set up
-    notes = M.registration_sanity(src, dst, res, cfg)
-    assert any("SYNTHETIC" in n for n in notes)
-
-
-def test_hand_picked_fiducials_are_not_flagged(cfg):
-    """The guard must stay quiet on a plausible hand-picked set."""
-    src = np.array([[400.0, 3300.0], [7700.0, 3300.0], [400.0, 5650.0]])
-    dst = src * 9.74
-    dst = dst + np.array([[3.0, -2.0], [-2.0, 4.0], [1.0, 3.0]])  # click noise
-    T = M.fit_similarity(src, dst)
-    res = M.residuals(T, src, dst)
-    assert not M.registration_sanity(src, dst, res, cfg)
-
-
-def test_collinear_fiducials_are_flagged(cfg):
-    """Three marks along one slide edge cannot constrain rotation."""
-    src = np.array([[400.0, 3300.0], [4000.0, 3302.0], [7700.0, 3299.0]])
-    dst = src * 9.74 + np.array([[2.0, -1.0], [-1.0, 2.0], [1.0, 1.0]])
-    T = M.fit_similarity(src, dst)
-    res = M.residuals(T, src, dst)
-    notes = M.registration_sanity(src, dst, res, cfg)
-    assert any("collinear" in n for n in notes)
-
-
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 def test_similarity_not_affine_leaves_real_residual():
     """An affine fit through 3 points is exactly determined and would
     report zero regardless of how bad the fiducials are."""
@@ -253,19 +207,14 @@ def test_edge_mode_radius_is_clamped(cfg):
         sp["max-radius"] + sp["edge-offset"])
 
 
-<<<<<<< HEAD
 def test_shot_count_matches_circular_pack(cfg, transform):
     """With dynamic-spots the count comes from the bead radius, as in
     microMS's circularPackPoints."""
-=======
-def test_one_shot_per_angle(cfg, transform):
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     beads = [M.Bead(1000 + 200 * i, 1200, 8.2) for i in range(3)]
     M.to_stage(beads, transform)
     M.isolation_filter(beads, cfg["min-bead-separation"])
     M.shape_filter(beads, cfg)
     shots = M.place_shots(beads, cfg)
-<<<<<<< HEAD
 
     expected = sum(len(M.circular_pack(b.diameter_um / 2, cfg))
                    for b in beads if b.accepted)
@@ -276,18 +225,10 @@ def test_no_software_travel_limit(cfg, transform):
     """There is no slide-bounds check. It was invented, it is not a
     real constraint, and it silently discarded every shot in a run.
     The stage enforces its own limits in hardware."""
-=======
-    assert len(shots) == len(cfg["laser-shot-angles"]) * 3
-
-
-def test_shots_outside_slide_bounds_are_dropped(cfg, transform):
-    cfg["slide-bounds"] = {"x_min": 0, "x_max": 1, "y_min": 0, "y_max": 1}
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     beads = [M.Bead(1000, 1200, 8.2)]
     M.to_stage(beads, transform)
     M.isolation_filter(beads, cfg["min-bead-separation"])
     M.shape_filter(beads, cfg)
-<<<<<<< HEAD
 
     shots = M.place_shots(beads, cfg)
     assert shots
@@ -317,45 +258,20 @@ def test_save_fiducials_round_trips(tmp_path):
     exec(text, ns)
     assert ns["FIDUCIALS"] == [{"x_px": 1.0, "y_px": 2.0,
                                 "x_um": 3.0, "y_um": 4.0}]
-=======
-    shots = M.place_shots(beads, cfg)
-    assert shots and all(s.dropped for s in shots)
-    assert all("bounds" in s.drop_reason for s in shots)
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 
 # ---------------------------------------------------------------------
 # .xeo export
 # ---------------------------------------------------------------------
 
-<<<<<<< HEAD
 
 def test_xeo_splits_at_400_and_round_trips(cfg, tmp_path):
     cfg["mtp_calibration"] = REAL_CAL
-=======
-def test_header_and_footer_line_counts_are_locked():
-    """microMS reads positions with lines[13:-12]."""
-    assert len(M.XEO_HEADER) == 13
-    assert len(M.XEO_FOOTER) == 12
-
-
-def test_xeo_splits_at_400_and_round_trips(cfg, tmp_path):
-    cfg["mtp_calibration"] = [
-        {"name": "A", "x_um": 0, "y_um": 0, "unit_x": 0.0, "unit_y": 0.0},
-        {"name": "B", "x_um": 75000, "y_um": 0, "unit_x": 1.0, "unit_y": 0.0},
-        {"name": "C", "x_um": 0, "y_um": 25000, "unit_x": 0.0,
-         "unit_y": 0.3333},
-    ]
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     mtp = M.fit_mtp(cfg)
     assert mtp is not None
 
     shots = [M.Shot(0, 0, 100.0 * i, 200.0) for i in range(950)]
-<<<<<<< HEAD
     files = M.write_xeo(tmp_path / "t", shots, [], cfg, mtp)
-=======
-    files = M.write_xeo(tmp_path / "t", shots, [], mtp)
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     assert [len(M.read_xeo(f)) for f in files] == [400, 400, 150]
 
 
@@ -397,493 +313,6 @@ def test_override_beyond_match_radius_is_ignored(cfg, tmp_path):
 # zoom helper
 # ---------------------------------------------------------------------
 
-<<<<<<< HEAD
-=======
-def _lod_axes(img, cfg, plain=False):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    fig = plt.figure(figsize=(14, 10), dpi=100)
-    ax = fig.add_axes([0.05, 0.16, 0.92, 0.79])
-    if plain:
-        ax.imshow(img, cmap="gray")
-    else:
-        M.attach_image_lod(ax, img, cfg)
-    return fig, ax
-
-
-def test_lod_extent_matches_plain_imshow_when_undecimated(cfg):
-    """
-    The decimated display must stay in ORIGINAL scan pixels or every
-    click in 'pick' and 'select' lands somewhere else. When the image
-    fits the budget there is no decimation, so the artist must sit at
-    exactly the extent plain imshow would have used. Comparing against
-    matplotlib itself keeps this honest -- checking the extent by
-    inverting through that same extent would pass no matter what.
-    """
-    import matplotlib.pyplot as plt
-    img = np.zeros((300, 400), np.uint8)
-    fig_a, ax_a = _lod_axes(img, cfg)
-    fig_b, ax_b = _lod_axes(img, cfg, plain=True)
-    try:
-        assert ax_a.images[0].get_array().shape == img.shape   # step == 1
-        assert (ax_a.images[0].get_extent()
-                == pytest.approx(ax_b.images[0].get_extent()))
-    finally:
-        plt.close(fig_a)
-        plt.close(fig_b)
-
-
-def test_lod_landmark_lands_on_its_own_scan_pixel(cfg):
-    """
-    Drive a real cursor position through matplotlib's transforms and
-    ask the artist what is under it. transData is built from the axes
-    limits, which are true scan pixels, so this is independent of the
-    extent arithmetic under test.
-    """
-    import matplotlib.pyplot as plt
-    from matplotlib.backend_bases import MouseEvent
-
-    rng = np.random.default_rng(0)
-    img = rng.integers(0, 60, size=(3000, 4000), dtype=np.uint8)
-    img[1234, 2345] = 255
-    assert (img == 255).sum() == 1
-
-    fig, ax = _lod_axes(img, cfg)
-    try:
-        ax.set_xlim(2345 - 100, 2345 + 100)
-        ax.set_ylim(1234 + 75, 1234 - 75)
-        fig.canvas.draw()
-        art = ax.images[0]
-        left, right = art.get_extent()[0], art.get_extent()[1]
-        assert (right - left) / art.get_array().shape[1] == 1   # 1:1 here
-
-        sx, sy = ax.transData.transform((2345.0, 1234.0))
-        ev = MouseEvent("motion_notify_event", fig.canvas, sx, sy)
-        assert art.get_cursor_data(ev) == 255
-    finally:
-        plt.close(fig)
-
-
-def test_lod_decimates_when_zoomed_out(cfg):
-    """A full-slide view must be decimated to the configured budget."""
-    import matplotlib.pyplot as plt
-    img = np.zeros((7551, 10002), np.uint8)
-    fig, ax = _lod_axes(img, cfg)
-    try:
-        budget = float(cfg.get("display-max-megapixels", 4.0)) * 1e6
-        arr = ax.images[0].get_array()
-        assert arr.size <= budget, (arr.size, budget)
-        assert arr.size < img.size / 4
-        left, right, bottom, top = ax.images[0].get_extent()
-        assert left < 1 and right > 10002 - 10
-        assert top < 1 and bottom > 7551 - 10
-    finally:
-        plt.close(fig)
-
-
-def test_lod_restores_limits_when_autoscale_is_on(cfg):
-    """
-    set_extent re-autoscales whenever autoscale is on, which would snap
-    the view back to the whole slide on every refresh and make zooming
-    impossible. attach_image_lod turns autoscale off AND puts the
-    limits back; this checks the second guard by re-enabling the first
-    one's failure mode.
-    """
-    import matplotlib.pyplot as plt
-    img = np.zeros((3000, 4000), np.uint8)
-    fig, ax = _lod_axes(img, cfg)
-    try:
-        # The refresh runs on the limit-changed callback, not on draw,
-        # and a plain set_xlim would switch autoscale off before it
-        # fires. auto=True keeps it on so set_extent really does try to
-        # rescale, which is the case the restore exists for.
-        ax.set_autoscale_on(True)          # undo the belt, leave the braces
-        ax.set_xlim(1000, 1200, auto=True)
-        ax.set_ylim(900, 700, auto=True)
-        fig.canvas.draw()
-        assert ax.get_xlim() == pytest.approx((1000, 1200))
-        assert ax.get_ylim() == pytest.approx((900, 700))
-    finally:
-        plt.close(fig)
-
-
-def test_review_sheet_covers_every_accepted_bead(cfg, transform, tmp_path):
-    """
-    The confirmation sheet exists to catch the ONE bead whose shots went
-    wrong, so it must paginate rather than sample. With a per-sheet cap
-    of 4 and 9 accepted beads that is 3 sheets, not one truncated one.
-    """
-    import cv2
-    scan = tmp_path / "scan.png"
-    img = np.full((600, 600), 200, np.uint8)
-    beads = []
-    for i in range(9):
-        x, y = 60 + (i % 3) * 200, 60 + (i // 3) * 200
-        cv2.circle(img, (x, y), 5, 90, -1)
-        b = M.Bead(x_px=float(x), y_px=float(y), diameter_px=10.0,
-                   diameter_um=90.0, nn_um=500.0, accepted=True)
-        beads.append(b)
-    cv2.imwrite(str(scan), img)
-
-    c = dict(cfg)
-    c["review"] = {"panel-px": 60, "panel-scale": 2, "columns": 2,
-                   "max-panels-per-sheet": 4}
-    for i, b in enumerate(beads):
-        b.x_um, b.y_um = transform.px_to_um([[b.x_px, b.y_px]])[0]
-    M.place_shots(beads, c)
-
-    outdir = tmp_path / "outputs" / "review_2026-01-02_030405"
-    pages = M.draw_shot_review(beads, c, transform, scan,
-                               "2026-01-02 03:04:05", outdir)
-
-    assert len(pages) == 3, [p.name for p in pages]      # 4 + 4 + 1
-    assert all(p.exists() and p.stat().st_size > 0 for p in pages)
-    # filesystem-safe, chronologically sortable
-    assert all(" " not in p.name and ":" not in p.name for p in pages)
-    assert all("2026-01-02_030405" in p.name for p in pages)
-
-
-def test_review_writes_nothing_without_accepted_beads(cfg, transform, tmp_path):
-    """No selection means nothing to confirm -- and no empty sheet."""
-    import cv2
-    scan = tmp_path / "scan.png"
-    cv2.imwrite(str(scan), np.full((200, 200), 200, np.uint8))
-    beads = [M.Bead(x_px=50.0, y_px=50.0, diameter_px=10.0, accepted=False)]
-    outdir = tmp_path / "outputs" / "review_2026-01-02_030405"
-    assert M.draw_shot_review(beads, cfg, transform, scan,
-                              "2026-01-02 03:04:05", outdir) == []
-    assert not outdir.exists()          # no empty folder either
-
-
-def _gui_backend():
-    """Name of an importable interactive backend, or None."""
-    for mod, name in (("PyQt5", "QtAgg"), ("PySide6", "QtAgg"),
-                      ("tkinter", "TkAgg")):
-        try:
-            __import__(mod)
-            return name
-        except ImportError:
-            continue
-    return None
-
-
-def test_max_fiducials_is_a_ceiling_not_a_target(cfg):
-    """
-    3 is the MINIMUM for a similarity fit, not the goal: with exactly 3
-    there is no spare point, so leave-one-out cannot run. The shipped
-    ceiling must leave room to go past 3.
-    """
-    assert cfg["max-fiducials"] >= 4
-    src = np.array([[0, 0], [2000, 0], [0, 1500], [2000, 1500]], float)
-    dst = src * 9.74
-    assert M.loo_residuals(src[:3], dst[:3]) is None      # 3 -> no estimate
-    assert M.loo_residuals(src, dst) is not None          # 4 -> real one
-
-
-@pytest.mark.skipif(
-    not _gui_backend(), reason="fiducial picker needs a GUI backend")
-def test_picker_stops_at_max_fiducials(cfg, tmp_path, monkeypatch):
-    """Drives the real picker; the Add button must refuse past the cap."""
-    import matplotlib
-    matplotlib.use(_gui_backend(), force=True)
-    import matplotlib.pyplot as plt
-    import matplotlib.widgets as W
-    from matplotlib.backend_bases import MouseEvent
-    import cv2
-
-    scan = tmp_path / "scan.png"
-    cv2.imwrite(str(scan), np.full((800, 900), 200, np.uint8))
-
-    seen = {"buttons": [], "boxes": []}
-    B, T = W.Button, W.TextBox
-    monkeypatch.setattr(W, "Button", lambda ax, label, **k: (
-        seen["buttons"].append(B(ax, label, **k)) or seen["buttons"][-1]))
-    monkeypatch.setattr(W, "TextBox", lambda ax, label, **k: (
-        seen["boxes"].append(T(ax, label, **k)) or seen["boxes"][-1]))
-    monkeypatch.setattr(plt, "show", lambda *a, **k: None)
-    monkeypatch.setattr(M, "save_fiducials", lambda f, **k: None)
-
-    c = dict(cfg)
-    c["fiducials"] = []
-    c["max-fiducials"] = 5
-    c["input"] = dict(c["input"])
-    c["input"]["scan"] = str(scan)
-    M.pick_fiducials(c)
-
-    add_btn, bx, by = seen["buttons"][0], seen["boxes"][0], seen["boxes"][1]
-    fig = add_btn.ax.figure
-    img_ax = fig.axes[0]
-    for i in range(8):
-        x, y = 100 + (i % 4) * 150, 100 + (i // 4) * 200
-        ev = MouseEvent("button_press_event", fig.canvas, 0, 0, button=3)
-        ev.inaxes = img_ax
-        ev.xdata, ev.ydata = float(x), float(y)
-        fig.canvas.callbacks.process("button_press_event", ev)
-        bx.set_val(str(x * 9.74))
-        by.set_val(str(y * 9.74))
-        add_btn._observers.process("clicked", None)
-
-    assert add_btn.label.get_text().endswith("5/5")
-    plt.close("all")
-
-
-SAMPLE_YAML = 'detection:\n  # keep me\n  roi:\n    # and me\n    x0: 100\n    y0: 200\n    x1: 300\n    y1: 400\n  method: flatfield\n'
-PARTIAL_YAML = 'detection:\n  roi:\n    x0: 1\n    y0: 2\n'
-NOROI_YAML = 'detection:\n  method: flatfield\n'
-
-
-def test_save_roi_rewrites_values_and_keeps_comments(tmp_path):
-    """
-    'Detect in box' widens detection.roi on close. The YAML comments are
-    the documentation for every tunable, so the rewrite must be surgical
-    -- a yaml.dump round-trip would silently delete all of them.
-    """
-    p = tmp_path / "laser_setup.yaml"
-    p.write_text(SAMPLE_YAML)
-    assert M.save_roi(10, 20, 900, 800, path=p) is True
-    out = p.read_text()
-    assert "# keep me" in out and "# and me" in out
-    assert "method: flatfield" in out
-    roi = yaml.safe_load(out)["detection"]["roi"]
-    assert roi == {"x0": 10, "y0": 20, "x1": 900, "y1": 800}
-
-
-def test_save_roi_reports_failure_rather_than_lying(tmp_path):
-    """
-    If the block is not in the expected shape the caller must be able to
-    tell the operator to edit by hand. Silently reporting success would
-    leave 'run' detecting the old region and discarding their picks.
-    """
-    p = tmp_path / "laser_setup.yaml"
-    p.write_text(NOROI_YAML)
-    assert M.save_roi(1, 2, 3, 4, path=p) is False
-    p.write_text(PARTIAL_YAML)
-    assert M.save_roi(1, 2, 3, 4, path=p) is False        # x1 / y1 absent
-
-
-def test_overrides_survive_a_redetect(cfg):
-    """
-    'Detect in box' re-runs every filter over the union, which resets the
-    accepted flags. Overrides made in that session live on the objects,
-    not on disk, so they must be re-applied by position afterwards.
-    """
-    beads = [M.Bead(x_px=100.0, y_px=100.0, diameter_px=10.0),
-             M.Bead(x_px=500.0, y_px=500.0, diameter_px=10.0)]
-    session = [(100.0, 100.0, "accept"), (500.0, 500.0, "reject")]
-    assert M.apply_override_entries(beads, session, cfg) == (2, 0)
-    assert beads[0].accepted and beads[0].manual == "accept"
-    assert not beads[1].accepted and beads[1].reject_category == "manual"
-
-    # An override whose bead vanished must be counted, not dropped quietly.
-    assert M.apply_override_entries(
-        beads, [(9000.0, 9000.0, "accept")], cfg) == (0, 1)
-
-
-@pytest.mark.skipif(
-    not _gui_backend(), reason="select window needs a GUI backend")
-def test_detect_in_box_finds_objects_outside_the_roi(cfg, tmp_path,
-                                                     monkeypatch):
-    """
-    A deposit outside detection.roi is never examined, so it shows as a
-    blank patch. 'Detect in box' must find it, re-run every filter over
-    the union, and keep the overrides already made in this session.
-
-    Assertions read the patch COLOUR, which encodes accepted/rejected.
-    Line width only tracks the `manual` flag, and the re-filter never
-    clears that -- checking width passes even when the overrides are
-    silently dropped.
-    """
-    import gc
-    import matplotlib
-    matplotlib.use(_gui_backend(), force=True)
-    import matplotlib.pyplot as plt
-    import matplotlib.widgets as W
-    from matplotlib.colors import to_rgba
-    import cv2
-
-    GREEN = to_rgba("#2ca02c")        # accepted
-    BLUE = to_rgba("#1f77b4")         # manually rejected
-
-    img = np.full((700, 900), 200, np.uint8)
-    inside = [(500, 300), (620, 430), (700, 180)]
-    outside = [(80, 300), (170, 430), (260, 180)]
-    for x, y in inside + outside:
-        cv2.circle(img, (x, y), 5, 90, -1)
-    scan = tmp_path / "scan.png"
-    cv2.imwrite(str(scan), img)
-
-    c = dict(cfg)
-    c["input"] = dict(c["input"])
-    c["input"]["scan"] = str(scan)
-    c["input"]["beads"] = None
-    c["detection"] = dict(c["detection"])
-    c["detection"]["roi"] = {"x0": 350, "y0": 0, "x1": 900, "y1": 700}
-
-    seen = {"b": []}
-    B = W.Button
-    monkeypatch.setattr(W, "Button", lambda ax, l, **k: (
-        seen["b"].append(B(ax, l, **k)) or seen["b"][-1]))
-    monkeypatch.setattr(M, "save_manual", lambda e, **k: None)
-    monkeypatch.setattr(M, "load_manual", lambda *a, **k: [])
-    roi_written = {}
-    monkeypatch.setattr(M, "save_roi", lambda *a, **k: (
-        roi_written.update(box=a) or True))
-
-    r = {}
-
-    def circles(ax):
-        # ax.patches also holds the RectangleSelector's own Rectangle.
-        from matplotlib.patches import Circle as _C
-        return [p for p in ax.patches if isinstance(p, _C)]
-
-    def near(ax, x, y):
-        return min(circles(ax),
-                   key=lambda p: (p.center[0] - x) ** 2 + (p.center[1] - y) ** 2)
-
-    def interact(*a, **k):
-        labels = [b.label.get_text() for b in seen["b"]]
-        det = seen["b"][labels.index("Detect in box")]
-        fig = det.ax.figure
-        ax = fig.axes[0]
-        r["before"] = list(circles(ax))
-
-        # Reject a bead the filters accepted. If the overrides are not
-        # re-applied after re-detection, the re-filter accepts it again
-        # and it turns green.
-        assert near(ax, 500, 300).get_edgecolor() == GREEN
-        ev = type("E", (), {})()
-        ev.inaxes, ev.button = ax, 3
-        ev.xdata, ev.ydata = 500.0, 300.0
-        fig.canvas.callbacks.process("button_press_event", ev)
-        assert near(ax, 500, 300).get_edgecolor() == BLUE
-
-        rs = next(o for o in gc.get_objects()
-                  if isinstance(o, W.RectangleSelector) and o.ax is ax)
-        ec, er = type("E", (), {})(), type("E", (), {})()
-        ec.xdata, ec.ydata = 20.0, 20.0
-        er.xdata, er.ydata = 340.0, 680.0
-        rs.onselect(ec, er)
-        det._observers.process("clicked", None)
-
-        r["new"] = [p for p in circles(ax) if p not in r["before"]]
-        r["override_colour"] = near(ax, 500, 300).get_edgecolor()
-
-    monkeypatch.setattr(plt, "show", interact)
-    M.bead_manual_selection(c)
-    plt.close("all")
-
-    # the three beads left of the ROI were invisible before
-    assert len(r["new"]) >= 3, len(r["new"])
-    # the filters ran over them, so the isolated ones came out accepted
-    assert any(p.get_edgecolor() == GREEN for p in r["new"]), \
-        [p.get_edgecolor() for p in r["new"]]
-    # and the override made before re-detection survived the re-filter
-    assert r["override_colour"] == BLUE
-    # run must be told to look there too, or it would discard the picks
-    assert roi_written.get("box", (None,))[0] <= 20
-
-
-@pytest.mark.skipif(
-    not _gui_backend(), reason="select window needs a GUI backend")
-def test_detect_in_box_does_not_duplicate_known_objects(cfg, tmp_path,
-                                                        monkeypatch):
-    """
-    The box drawn for 'Detect in box' almost always overlaps ground the
-    configured ROI already covered, so detection finds those objects a
-    second time.
-
-    A duplicate is not merely a double count. It lands within a pixel or
-    two of its own twin, so when the filters re-run over the union that
-    bead's nearest neighbour is itself, it fails the isolation test, and
-    a bead the operator had already accepted silently stops being a
-    target. That is the regression this pins.
-    """
-    import gc
-    import matplotlib
-    matplotlib.use(_gui_backend(), force=True)
-    import matplotlib.pyplot as plt
-    import matplotlib.widgets as W
-    from matplotlib.colors import to_rgba
-    from matplotlib.patches import Circle
-    import cv2
-
-    GREEN = to_rgba("#2ca02c")
-
-    img = np.full((700, 900), 200, np.uint8)
-    inside = [(500, 300), (620, 430), (700, 180)]
-    outside = [(80, 300), (170, 430), (260, 180)]
-    for x, y in inside + outside:
-        cv2.circle(img, (x, y), 5, 90, -1)
-    scan = tmp_path / "scan.png"
-    cv2.imwrite(str(scan), img)
-
-    c = dict(cfg)
-    c["input"] = dict(c["input"])
-    c["input"]["scan"] = str(scan)
-    c["input"]["beads"] = None
-    c["detection"] = dict(c["detection"])
-    c["detection"]["roi"] = {"x0": 350, "y0": 0, "x1": 900, "y1": 700}
-
-    seen = {"b": []}
-    B = W.Button
-    monkeypatch.setattr(W, "Button", lambda ax, l, **k: (
-        seen["b"].append(B(ax, l, **k)) or seen["b"][-1]))
-    monkeypatch.setattr(M, "save_manual", lambda e, **k: None)
-    monkeypatch.setattr(M, "load_manual", lambda *a, **k: [])
-    monkeypatch.setattr(M, "save_roi", lambda *a, **k: True)
-
-    r = {}
-
-    def circles(ax):
-        return [p for p in ax.patches if isinstance(p, Circle)]
-
-    def interact(*a, **k):
-        labels = [b.label.get_text() for b in seen["b"]]
-        det = seen["b"][labels.index("Detect in box")]
-        fig = det.ax.figure
-        ax = fig.axes[0]
-        r["before"] = len(circles(ax))
-
-        # A box over the WHOLE image: everything the ROI already found
-        # is inside it, so every one of those is a duplicate candidate.
-        rs = next(o for o in gc.get_objects()
-                  if isinstance(o, W.RectangleSelector) and o.ax is ax)
-        ec, er = type("E", (), {})(), type("E", (), {})()
-        ec.xdata, ec.ydata = 5.0, 5.0
-        er.xdata, er.ydata = 895.0, 695.0
-        rs.onselect(ec, er)
-        det._observers.process("clicked", None)
-
-        r["after"] = len(circles(ax))
-        r["centres"] = [p.center for p in circles(ax)]
-        r["green_at_500_300"] = min(
-            circles(ax),
-            key=lambda p: (p.center[0] - 500) ** 2 + (p.center[1] - 300) ** 2
-        ).get_edgecolor() == GREEN
-
-    monkeypatch.setattr(plt, "show", interact)
-    M.bead_manual_selection(c)
-    plt.close("all")
-
-    # Only the three objects left of the ROI are new. Without the
-    # duplicate screen this would grow by six, not three.
-    assert r["after"] - r["before"] == 3, (r["before"], r["after"])
-
-    # No object sits on top of another.
-    dup = float(c.get("manual-selection", {}).get("redetect-duplicate-px", 10))
-    pts = np.array(r["centres"], float)
-    d = np.hypot(pts[:, None, 0] - pts[None, :, 0],
-                 pts[:, None, 1] - pts[None, :, 1])
-    np.fill_diagonal(d, np.inf)
-    assert d.min() > dup, d.min()
-
-    # And a bead that was already a target is still one, rather than
-    # having failed isolation against its own twin.
-    assert r["green_at_500_300"]
-
-
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 def test_zoom_about_cursor_keeps_point_fixed():
     matplotlib = pytest.importorskip("matplotlib")
     matplotlib.use("Agg")
@@ -911,7 +340,6 @@ def test_zoom_about_cursor_keeps_point_fixed():
     fit()
     assert ax.get_xlim() == pytest.approx(home)
     plt.close(fig)
-<<<<<<< HEAD
 
 
 # ---------------------------------------------------------------------
@@ -1328,5 +756,3 @@ def test_edge_placement_scales_with_measured_radius(cfg):
 
 def test_edge_is_the_default():
     assert M.CONFIG["shot-placement"]["distance-reference"] == "edge"
-=======
->>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
