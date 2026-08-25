@@ -227,6 +227,19 @@ shift the moment any detection parameter changes. On reload each override is
 matched to the nearest detected object within `match-radius-px`; anything with
 no match is reported rather than silently dropped.
 
+Once the selection looks right, preview it:
+
+```
+python microMS_beadtargeting.py review
+```
+
+`review` fits the registration, applies every filter plus your manual
+selection, places the shots, and draws them on the scan -- green accepted
+beads, blue shot craters, orange dotted for dropped shots. It saves
+`targets_review.png` (and opens a window unless `output.review-show` is
+false). It exports nothing; `run` is still the only command that writes
+target files.
+
 ## 7. `python microMS_beadtargeting.py run`
 
 The pipeline, in this order:
@@ -376,6 +389,7 @@ python microMS_beadtargeting.py convert   # image -> TIFF
 python microMS_beadtargeting.py pick      # click fiducials -> YAML
 python microMS_beadtargeting.py select    # bead manual selection
 python microMS_beadtargeting.py check     # registration quality only
+python microMS_beadtargeting.py review    # show planned shots, no export
 python microMS_beadtargeting.py run       # detect, filter, shoot, export
 python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 

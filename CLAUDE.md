@@ -130,9 +130,10 @@ need a separate read-through.
 ```
 python microMS_beadtargeting.py doctor    # environment check, run this first
 python microMS_beadtargeting.py convert   # image -> TIFF
-python microMS_beadtargeting.py pick      # click fiducials -> YAML
+python microMS_beadtargeting.py pick      # click fiducials -> saved here
 python microMS_beadtargeting.py select    # bead manual selection
 python microMS_beadtargeting.py check     # registration quality only
+python microMS_beadtargeting.py review    # show planned shots, no export
 python microMS_beadtargeting.py run       # detect, filter, shoot, export
 python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 

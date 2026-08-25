@@ -831,3 +831,39 @@ def test_zoom_crops_instead_of_drawing_everything():
     back = ax.transData.inverted().transform(d)[0]
     assert back[0] == pytest.approx(2050, abs=0.01)
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------
+# review
+# ---------------------------------------------------------------------
+
+def test_review_saves_picture_and_exports_nothing(cfg, tmp_path, monkeypatch):
+    """'review' is a preview between 'select' and 'run': it must render
+    the shot plan but never write target files."""
+    beads = [M.Bead(1000 + 200 * i, 1200, 8.2) for i in range(4)]
+    T = M.transform_from_config(cfg)
+    M.to_stage(beads, T)
+    M.isolation_filter(beads, cfg["min-bead-separation"])
+    M.shape_filter(beads, cfg)
+    assert any(b.accepted for b in beads)
+
+    monkeypatch.setattr(M, "HERE", tmp_path)
+    monkeypatch.setattr(M, "build_beads", lambda c, t: (beads, None))
+    cfg["output"]["review-show"] = False
+
+    M.review(cfg)
+
+    assert (tmp_path / "targets_review.png").exists()
+    exports = [p.name for p in tmp_path.iterdir()
+               if p.suffix in (".csv", ".xeo", ".run", ".txt")]
+    assert exports == [], exports
+
+
+def test_review_is_dispatched(monkeypatch):
+    """The help text advertises 'review'; the dispatcher must know it.
+    (It was once a documented command with no implementation.)"""
+    called = []
+    monkeypatch.setattr(M, "review", lambda cfg: called.append(True))
+    monkeypatch.setattr(M.sys, "argv", ["microMS_beadtargeting.py", "review"])
+    M.main()
+    assert called == [True]

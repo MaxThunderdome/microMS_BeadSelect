@@ -27,10 +27,10 @@ Usage
 -----
     python microMS_beadtargeting.py doctor    # environment check
     python microMS_beadtargeting.py convert   # image -> TIFF
-    python microMS_beadtargeting.py pick      # click fiducials -> YAML
+    python microMS_beadtargeting.py pick      # click fiducials -> saved here
     python microMS_beadtargeting.py select    # bead manual selection
     python microMS_beadtargeting.py check     # registration quality only
-    python microMS_beadtargeting.py review    # click beads in/out of the run
+    python microMS_beadtargeting.py review    # show planned shots, no export
     python microMS_beadtargeting.py run       # detect, filter, shoot, export
     python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 
@@ -296,6 +296,9 @@ CONFIG = {
         "write-xeo": True,
         "overlay": True,
         "overlay-show": False,
+        # 'review' opens a window showing the planned shots; set False
+        # to save the picture only (headless / remote sessions).
+        "review-show": True,
         "zoom": True,
         "zoom-window-px": 700,
         "zoom-scale": 3,
@@ -2678,6 +2681,63 @@ def run(cfg: dict) -> None:
 
 
 # =====================================================================
+# REVIEW
+# =====================================================================
+
+def review(cfg: dict) -> None:
+    """
+    Show where the shots would land, before anything is exported.
+
+    Sits between 'select' and 'run': fits the registration, detects
+    and filters beads (honouring manual_selection.csv), places shots,
+    and renders them on the scan. Saves <prefix>_review.png and, with
+    output.review-show true and a display available, opens the same
+    picture in a window. Writes NO target files -- 'run' remains the
+    only command that exports.
+    """
+    log("fitting registration from fiducials")
+    T = to_microns(transform_from_config(cfg), cfg)
+
+    fids = cfg["fiducials"]
+    src = np.array([[f["x_px"], f["y_px"]] for f in fids], float)
+    dst = np.array([[f["x_um"], f["y_um"]] for f in fids], float)
+    r = residuals(T, src, dst)
+    say(f"Registration   : {len(fids)} fiducials, "
+        f"RMS residual {np.sqrt((r ** 2).mean()):.2f} um")
+    limit = float(cfg.get("max-fiducial-residual-um", 25))
+    if r.max() > limit:
+        say(f"  WARNING: max fiducial residual {r.max():.2f} um exceeds "
+            f"{limit:.0f} um.\n  The drawn shot positions inherit that "
+            f"error. Run 'check' and fix the\n  fiducials before "
+            f"trusting this picture.")
+
+    beads, scan = build_beads(cfg, T)
+    log(f"placing {len(cfg['laser-shot-angles'])} shots per accepted bead")
+    shots = place_shots(beads, cfg, T)
+    n_live = sum(not s.dropped for s in shots)
+    say(f"Planned shots  : {n_live} on "
+        f"{sum(b.accepted for b in beads)} accepted beads "
+        f"({len(shots) - n_live} dropped)")
+    for reason in sorted({s.drop_reason for s in shots if s.dropped}):
+        n = sum(1 for s in shots if s.dropped and s.drop_reason == reason)
+        say(f"      {n:5d}  {reason}")
+
+    prefix = HERE / cfg["output"]["prefix"]
+    png = prefix.with_name(prefix.name + "_review.png")
+    show = bool(cfg["output"].get("review-show", True))
+    if show:
+        import matplotlib
+        if matplotlib.get_backend().lower() in (
+                "agg", "pdf", "ps", "svg", "template"):
+            say("  no display backend: saving the picture only "
+                "(see doctor)")
+            show = False
+    draw_overlay(png, beads, shots, cfg, T, scan, show)
+    say(f"Wrote {png.name}")
+    say("Nothing exported. Run 'run' to write the target files.")
+
+
+# =====================================================================
 # DOCTOR
 # =====================================================================
 
@@ -2928,6 +2988,8 @@ def main() -> None:
         bead_manual_selection(load_config())
     elif cmd == "check":
         report_registration(load_config())
+    elif cmd == "review":
+        review(load_config())
     elif cmd == "run":
         run(load_config())
     elif cmd == "selftest":
