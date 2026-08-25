@@ -111,10 +111,10 @@ def banner(cmd: str) -> None:
 # Do not reuse these across sessions once the slide has been remounted:
 # repositioning shows up as a systematic error at every target.
 FIDUCIALS = [
-    {"x_px": 263.05, "y_px": 252.85, "x_um": 18601.50, "y_um": -20310.80},
-    {"x_px": 9655.71, "y_px": 268.03, "x_um": 86083.10, "y_um": -20161.00},
-    {"x_px": 249.13, "y_px": 7362.01, "x_um": 18646.70, "y_um": -69830.80},
-    {"x_px": 9628.05, "y_px": 7371.59, "x_um": 86124.70, "y_um": -69700.20},
+    {"x_px": 265.53, "y_px": 253.88, "x_um": 18601.50, "y_um": -20310.80},
+    {"x_px": 9656.04, "y_px": 266.21, "x_um": 86083.10, "y_um": -20161.00},
+    {"x_px": 253.30, "y_px": 7363.53, "x_um": 18646.70, "y_um": -69830.80},
+    {"x_px": 9626.06, "y_px": 7369.93, "x_um": 86124.70, "y_um": -69700.20},
 ]
 
 
