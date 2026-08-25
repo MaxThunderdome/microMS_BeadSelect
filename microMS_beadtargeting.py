@@ -117,8 +117,6 @@ FIDUCIALS = [
     # {"x_px": ?, "y_px": ?, "x_um": 86083.1, "y_um": -20161.0},  top right
     # {"x_px": ?, "y_px": ?, "x_um": 18646.7, "y_um": -69830.8},  bottom left
     # {"x_px": ?, "y_px": ?, "x_um": 86124.7, "y_um": -69700.2},  bottom right
-    #
-    # Comi et al. 2017 recommend >=12; error falls as 1/sqrt(n).
 ]
 
 
@@ -195,6 +193,21 @@ CONFIG = {
         # across the slide.
         "min-radius": 25,
         "max-radius": 70,
+
+        # Shot count per bead.
+        #
+        # False   use laser-shot-angles exactly as listed.
+        # True    microMS's circularPackPoints: the count follows the
+        #         bead radius, so a large bead gets more shots while
+        #         shot-to-shot spacing stays above spot-spacing. A
+        #         small bead keeps min-spots.
+        #
+        # max-spots == min-spots reproduces a fixed count.
+        "dynamic-spots": True,
+        "min-spots": 4,
+        "max-spots": 12,
+        "spot-spacing": 60,
+        "rotation-offset-deg": 0.0,
     },
 
     # Laser footprint. Affects ONLY the crater-overlap check; it moves
@@ -891,6 +904,12 @@ def isolation_filter(beads: list[Bead], min_sep_um: float) -> None:
         for b in beads:
             b.nn_um = float("inf")
         return
+
+    # Same rule as microMS blobList.distanceFilter: a blob fails if
+    # ANY neighbour is closer than the cutoff, and both members of a
+    # too-close pair fail. Recording the nearest-neighbour distance
+    # and comparing it to the cutoff is equivalent, and keeps the
+    # number for the CSV and the histogram.
     pts = np.array([[b.x_um, b.y_um] for b in beads], float)
     dist, _ = cKDTree(pts).query(pts, k=2)
     for b, dd in zip(beads, dist[:, 1]):
@@ -944,6 +963,46 @@ class Shot:
     drop_reason: str = ""
 
 
+def circular_pack(radius_um: float, cfg: dict) -> list[float]:
+    """
+    Angles for one bead, following microMS's
+    blobList.circularPackPoints exactly.
+
+        maxR = maxSpots * spacing / 2pi - offset
+        minR = minSpots * spacing / 2pi - offset
+
+        radius > maxR   ->  maxSpots
+        radius < minR   ->  minSpots      (spacing ignored)
+        otherwise       ->  floor(2pi * (radius + offset) / spacing)
+
+    Targets are then equally spaced around the circumference. The
+    effect is that a large bead gets more shots and a small one keeps
+    the minimum, while shot-to-shot spacing never drops below
+    `spacing`.
+
+    Setting max-spots == min-spots reproduces a fixed count.
+    """
+    sp = cfg["shot-placement"]
+    spacing = float(sp.get("spot-spacing", 60))
+    offset = float(sp.get("edge-offset", 15))
+    min_spots = int(sp.get("min-spots", 4))
+    max_spots = max(int(sp.get("max-spots", 4)), min_spots)
+
+    max_r = max_spots * spacing / (2 * math.pi) - offset
+    min_r = min_spots * spacing / (2 * math.pi) - offset
+
+    if radius_um > max_r:
+        n = max_spots
+    elif radius_um < min_r:
+        n = min_spots
+    else:
+        n = int(math.floor(2 * math.pi * (radius_um + offset) / spacing))
+        n = max(n, min_spots)
+
+    rot = float(sp.get("rotation-offset-deg", 0.0))
+    return [rot + 360.0 * k / n for k in range(n)]
+
+
 def shot_radius(bead: Bead, cfg: dict) -> float:
     """Distance from bead centre to shot centre."""
     sp = cfg["shot-placement"]
@@ -958,7 +1017,8 @@ def shot_radius(bead: Bead, cfg: dict) -> float:
 
 def place_shots(beads: list[Bead], cfg: dict,
                 T: "Transform | None" = None) -> list[Shot]:
-    angles = [float(a) for a in cfg["laser-shot-angles"]]
+    fixed_angles = [float(a) for a in cfg["laser-shot-angles"]]
+    dynamic = cfg["shot-placement"].get("dynamic-spots", False)
     T_um_per_px = T.um_per_px if T is not None else 0.0
     crater = footprint_um(cfg)
     enforce = cfg.get("enforce-bead-clearance", True)
@@ -972,6 +1032,10 @@ def place_shots(beads: list[Bead], cfg: dict,
         if not b.accepted:
             continue
         R = shot_radius(b, cfg)
+        # microMS sizes the ring from the bead; the fixed list is the
+        # simpler alternative.
+        angles = (circular_pack(b.diameter_um / 2.0, cfg) if dynamic
+                  else fixed_angles)
         ring: list[Shot] = []
         for a in angles:
             rad = math.radians(a)
@@ -2647,7 +2711,8 @@ def selftest() -> None:
     print("6. shots")
     shots = place_shots(beads, cfg)
     live = serpentine(beads, shots)
-    assert len(shots) == 4 * len(acc)
+    expected = sum(len(circular_pack(b.diameter_um / 2, cfg)) for b in acc)
+    assert len(shots) == expected, (len(shots), expected)
     print(f"   {len(shots)} placed, {len(live)} survive validation")
 
     print("7. .xeo split and round-trip")

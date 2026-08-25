@@ -31,6 +31,7 @@ tests/test_pipeline.py     pytest suite (22 tests, no instrument needed)
 CLAUDE.md                  constraints and invariants for Claude Code
 ATTRIBUTION.md             microMS citation and the copy boundary
 MANUAL_COVERAGE.md         what we take from the microMS guide, and what we skip
+DIVERGENCE.md              every point where this differs from microMS
 ```
 
 Python 3.10 or newer, and four packages. `requirements.txt` lists which command

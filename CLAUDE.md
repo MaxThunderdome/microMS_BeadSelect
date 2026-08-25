@@ -149,6 +149,17 @@ that is the point of them. Keep them.
 
 Prefer showing results in the terminal over writing extra files.
 
+## Divergence from microMS
+
+`DIVERGENCE.md` is the record of what uses microMS directly, what is ported to
+match it exactly, and where this deliberately differs. Update it whenever you
+change behaviour microMS also implements.
+
+The one substantive algorithmic divergence is **blob finding**: microMS
+thresholds a colour channel, this flat-field subtracts first, because bead
+contrast here is under 10 grey levels with illumination drift. A global
+threshold sweep returned 28,495 objects on the reference scan.
+
 ## Deliberate omissions
 
 `MANUAL_COVERAGE.md` records what the microMS User Guide contains, what we

@@ -207,13 +207,18 @@ def test_edge_mode_radius_is_clamped(cfg):
         sp["max-radius"] + sp["edge-offset"])
 
 
-def test_one_shot_per_angle(cfg, transform):
+def test_shot_count_matches_circular_pack(cfg, transform):
+    """With dynamic-spots the count comes from the bead radius, as in
+    microMS's circularPackPoints."""
     beads = [M.Bead(1000 + 200 * i, 1200, 8.2) for i in range(3)]
     M.to_stage(beads, transform)
     M.isolation_filter(beads, cfg["min-bead-separation"])
     M.shape_filter(beads, cfg)
     shots = M.place_shots(beads, cfg)
-    assert len(shots) == len(cfg["laser-shot-angles"]) * 3
+
+    expected = sum(len(M.circular_pack(b.diameter_um / 2, cfg))
+                   for b in beads if b.accepted)
+    assert len(shots) == expected
 
 
 def test_no_software_travel_limit(cfg, transform):
@@ -351,7 +356,7 @@ def test_single_detected_object_does_not_crash(cfg, transform):
     assert beads[0].accepted
 
     shots = M.place_shots(beads, cfg)
-    assert len(shots) == len(cfg["laser-shot-angles"])
+    assert len(shots) == len(M.circular_pack(beads[0].diameter_um / 2, cfg))
     assert not any(s.dropped for s in shots)
 
 
@@ -662,3 +667,49 @@ def test_separation_rule_when_error_is_known(cfg):
     cfg["target-localization-error-um"] = 10.0
     probe_r = M.footprint_um(cfg) / 2.0
     assert float(cfg["min-bead-separation"]) > 10.0 + probe_r
+
+
+# ---------------------------------------------------------------------
+# circular packing, ported from blobList.circularPackPoints
+# ---------------------------------------------------------------------
+
+def test_shot_count_follows_bead_radius(cfg):
+    """Small beads keep min-spots; larger ones get more, so shot-to-shot
+    spacing stays above spot-spacing."""
+    counts = [len(M.circular_pack(d / 2, cfg)) for d in (36, 60, 90, 120, 165)]
+    assert counts == [4, 4, 6, 7, 10]
+    assert counts == sorted(counts)
+
+
+def test_min_and_max_spots_are_respected(cfg):
+    sp = cfg["shot-placement"]
+    assert len(M.circular_pack(1.0, cfg)) == sp["min-spots"]
+    assert len(M.circular_pack(10000.0, cfg)) == sp["max-spots"]
+
+
+def test_equal_min_max_gives_a_fixed_count(cfg):
+    cfg["shot-placement"]["min-spots"] = 4
+    cfg["shot-placement"]["max-spots"] = 4
+    for d in (36, 90, 165):
+        assert len(M.circular_pack(d / 2, cfg)) == 4
+
+
+def test_angles_are_evenly_spaced(cfg):
+    a = M.circular_pack(45.0, cfg)
+    steps = [round(a[i + 1] - a[i], 6) for i in range(len(a) - 1)]
+    assert len(set(steps)) == 1
+
+
+def test_rotation_offset_shifts_every_angle(cfg):
+    cfg["shot-placement"]["rotation-offset-deg"] = 30.0
+    assert M.circular_pack(45.0, cfg)[0] == pytest.approx(30.0)
+
+
+def test_dynamic_can_be_switched_off(cfg, transform):
+    cfg["shot-placement"]["dynamic-spots"] = False
+    beads = [M.Bead(1000, 1200, 8.2)]
+    M.to_stage(beads, transform)
+    M.isolation_filter(beads, cfg["min-bead-separation"])
+    M.shape_filter(beads, cfg)
+    shots = M.place_shots(beads, cfg)
+    assert len(shots) == len(cfg["laser-shot-angles"])
