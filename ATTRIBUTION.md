@@ -18,15 +18,22 @@ with no explicit licence, and the code was written to avoid reuse on that
 basis. That was wrong. MIT permits reuse with attribution, so the constraint
 does not apply.
 
-What is reproduced here from microMS, all under MIT with the copyright notice
-retained:
+**microMS source is vendored, unmodified, under `microms/`** — the minimum
+subset needed to write `.xeo` files with its own `brukerMapper.writeXEO`:
 
-- the `.xeo` header and footer constants, from `brukerMapper.py`
-- the `<PlateSpot .../>` line format and the `x_<X>y_<Y>` position naming
-- `MTP_MAP_X` / `MTP_MAP_Y`, the named MTP grid fractions
-- the flexImaging spot-list format, from `flexImagingSolarix.py`
+    CoordinateMappers/  brukerMapper, coordinateMapper
+    ImageUtilities/     blob
+    GUICanvases/        GUIConstants
 
-The detection, filtering, clump screening and shot placement here are original.
+`flex_mapper.py` supplies the concrete `flexMapper` subclass microMS does not
+ship, since the public release has no timsTOF fleX mapper. It provides only
+`motorCoordFilename`, `isValidMotorCoord`, `extractMotorPoint`,
+`loadInstrumentFile` and `saveInstrumentFile`. The `.xeo` header and footer,
+the MTP grid fractions, the motor-to-plate-fraction map and the point-based
+similarity registration all come from microMS unchanged.
+
+The detection, clump screening, filtering, shot placement, `.run` writer and
+400-position split are original.
 
 ## What is NOT in microMS
 

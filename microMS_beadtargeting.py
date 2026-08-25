@@ -111,15 +111,14 @@ def banner(cmd: str) -> None:
 # Do not reuse these across sessions once the slide has been remounted:
 # repositioning shows up as a systematic error at every target.
 FIDUCIALS = [
-    # The corners of the two-slide array, stage microns measured on the
-    # fleX. Pixel positions are yours to click in `pick`.
+    # Corners of the two-slide array; stage microns measured on the fleX.
+    # Pixel positions are yours to click in `pick`.
     # {"x_px": ?, "y_px": ?, "x_um": 18601.5, "y_um": -20310.8},  top left
     # {"x_px": ?, "y_px": ?, "x_um": 86083.1, "y_um": -20161.0},  top right
     # {"x_px": ?, "y_px": ?, "x_um": 18646.7, "y_um": -69830.8},  bottom left
     # {"x_px": ?, "y_px": ?, "x_um": 86124.7, "y_um": -69700.2},  bottom right
     #
-    # Four corners is the minimum. Comi et al. 2017 recommend >=12
-    # fiducials -- add etched X marks and pick those too.
+    # Comi et al. 2017 recommend >=12; error falls as 1/sqrt(n).
 ]
 
 
@@ -1278,63 +1277,66 @@ def fit_mtp(cfg: dict) -> Transform | None:
 def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
               cfg: dict, M: "Transform | None" = None) -> list[Path]:
     """
-    Write .xeo files, splitting at the 400-position autoXecute cap.
+    Write .xeo files using microMS's own brukerMapper.writeXEO.
 
-    Header, footer and the <PlateSpot .../> line follow microMS's
-    brukerMapper.writeXEO (MIT).
+    Not a reimplementation: flex_mapper.flexMapper subclasses
+    brukerMapper, so the header, footer, spot-line format, MTP grid
+    fractions and the motor-to-plate-fraction map all come from
+    microMS unchanged.
 
-    Two routes to UnitCoord:
-
-    "plate"  fiducials were given as the plate position the instrument
-             displays, so shot positions are already plate units and
-             UnitCoord is a fixed rescaling of them. Needs no
-             calibration file.
-
-    "stage"  fiducials were raw motor microns, so mtp_calibration must
-             supply the motor -> UnitCoord fit.
+    brukerMapper.writeXEO does not split -- that is solarixMapper --
+    so the 400-position cap is applied here.
     """
-    plate_mode = cfg.get("fiducial-units", "stage") == "plate"
-
-    if not plate_mode and M is None:
-        print("\nSKIPPED .xeo: fiducial-units is 'stage' and "
-              "mtp_calibration is empty.\n"
-              "  UnitCoord is a signed plate fraction, not microns. Either\n"
-              "  set fiducial-units to 'plate' and enter fiducials as the\n"
-              "  position the instrument displays, or supply the stage\n"
-              "  coordinates of two named MTP positions. The CSV is still\n"
-              "  written.")
+    cal = cfg.get("mtp_calibration") or []
+    if isinstance(cal, str) or len(cal) < 2:
+        cal = _calibration_rows(cfg)
+    if len(cal) < 2:
+        print("\nSKIPPED .xeo: mtp_calibration needs at least two named MTP\n"
+              "  positions with their stage coordinates. The CSV is still "
+              "written.")
         return []
 
-    flip = bool(cfg["output"].get("flip-y", False))
+    import flex_mapper
+
+    coord_file = HERE / "flexCoords.txt"
+    flex_mapper.write_coord_file(coord_file, cal)
+    mapper = flex_mapper.flexMapper(str(coord_file))
+    log(f"brukerMapper loaded, motor2MTP fitted from {len(cal)} positions")
+
+    # Hand it the fiducial training set. Its own PBSR then reproduces
+    # the pixel -> motor transform we already fitted and reported.
+    for f in cfg["fiducials"]:
+        mapper.addPoints((f["x_px"], f["y_px"]), (f["x_um"], f["y_um"]))
+    mapper.PBSR()
+
     written = []
     chunks = [shots[i:i + XEO_MAX_POSITIONS]
               for i in range(0, len(shots), XEO_MAX_POSITIONS)] or [[]]
-
     for n, chunk in enumerate(chunks, start=1):
-        pts = (np.array([[s.x_um, s.y_um] for s in chunk], float)
-               if chunk else np.zeros((0, 2)))
-        if not len(pts):
-            unit = pts
-        elif plate_mode:
-            unit = np.array([plate_to_unitcoord(x / PLATE_UNIT_UM,
-                                                y / PLATE_UNIT_UM, flip)
-                             for x, y in pts], float)
-        else:
-            unit = M.px_to_um(pts)
-
-        body = ['\t<PlateSpots PositionNumber="{}">'.format(len(chunk))]
-        for k, (s, u) in enumerate(zip(chunk, unit)):
-            body.append(
-                '\t\t<PlateSpot PositionIndex="{0}" '
-                'PositionName="{1}" UnitCoord_X="{2:.6f}" '
-                'UnitCoord_Y="{3:.6f}"/>'.format(
-                    k, position_name(cfg, (n - 1) * XEO_MAX_POSITIONS + k, s),
-                    u[0], u[1]))
-
+        blobs = [flex_mapper.make_blob(s.x_px, s.y_px) for s in chunk]
         out = prefix.with_name(f"{prefix.name}_{n:03d}.xeo")
-        out.write_text("\n".join(XEO_HEADER + body + XEO_FOOTER) + "\n")
+        mapper.saveInstrumentFile(str(out), blobs)
         written.append(out)
     return written
+
+
+def _calibration_rows(cfg: dict) -> list[dict]:
+    """mtp_calibration as rows, whether inline or a Coords.txt path."""
+    cal = cfg.get("mtp_calibration") or []
+    if not isinstance(cal, str):
+        return list(cal)
+    path = Path(cal)
+    if not path.is_absolute():
+        path = HERE / path
+    if not path.exists():
+        sys.exit(f"mtp_calibration file not found: {path}")
+    rows = []
+    for line in path.read_text().splitlines():
+        t = line.replace("\t", " ").split()
+        if len(t) >= 3:
+            rows.append({"name": t[0], "x_um": float(t[1]),
+                         "y_um": float(t[2])})
+    return rows
 
 
 def read_xeo(path: Path) -> list[str]:

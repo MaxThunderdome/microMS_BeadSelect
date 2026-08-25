@@ -509,18 +509,27 @@ def test_unitcoord_stays_in_plate_range(cfg):
     assert abs(u[0][0]) < 0.8 and abs(u[0][1]) < 0.6
 
 
-def test_plate_mode_writes_xeo_without_calibration(cfg, tmp_path):
-    """UnitCoord follows from plate constants, so no calibration file
-    and no stage measurement is required."""
-    cfg["mtp_calibration"] = []
-    cfg["fiducial-units"] = "plate"
-    files = M.write_xeo(tmp_path / "t", [M.Shot(0, 0, 44870.0, 44240.0)],
-                        [], cfg, None)
+def test_xeo_written_by_microms_brukermapper(cfg, tmp_path):
+    """The .xeo comes from microMS's own writeXEO, not a copy of it."""
+    cfg["fiducials"] = [
+        {"x_px": 200, "y_px": 150, "x_um": 18601.5, "y_um": -20310.8},
+        {"x_px": 8120, "y_px": 150, "x_um": 86083.1, "y_um": -20161.0},
+        {"x_px": 200, "y_px": 5960, "x_um": 18646.7, "y_um": -69830.8},
+        {"x_px": 8120, "y_px": 5960, "x_um": 86124.7, "y_um": -69700.2},
+    ]
+    shots = [M.Shot(0, 0, 0.0, 0.0, x_px=2765, y_px=1665)]
+    files = M.write_xeo(tmp_path / "t", shots, [], cfg)
     assert len(files) == 1
-    # 12 header lines + the per-file <PlateSpots> line = the 13 that
-    # microMS's loadXEO skips, leaving just the spot lines.
-    assert len(M.read_xeo(files[0])) == 1
-    assert 'UnitCoord_X=' in M.read_xeo(files[0])[0]
+    text = files[0].read_text()
+    assert "<PlateType>" in text
+    assert 'PlateTypeName="MTP Slide Adapter II"' in text
+    assert 'PositionName="x_2765y_1665"' in text
+    # microMS's loadXEO skips 13 header and 12 footer lines, leaving
+    # exactly the spot lines.
+    spots = M.read_xeo(files[0])
+    assert len(spots) == 1
+    assert spots[0].strip().startswith("<PlateSpot ")
+
 
 
 def test_stage_mode_still_needs_calibration(cfg, tmp_path):
