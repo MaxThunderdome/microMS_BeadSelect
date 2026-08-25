@@ -1761,12 +1761,59 @@ def draw_zoom(path: Path, beads: list[Bead], cfg: dict, T: Transform,
 # FIDUCIAL PICKER
 # =====================================================================
 
+def _floats_in(text: str) -> list[str]:
+    """Numeric tokens in pasted text, in order. Accepts any separator
+    (comma, tab, space, newline) and scientific notation, so a stage
+    readout copied as '18601.5, -20310.8' yields both numbers."""
+    import re
+    return re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", text)
+
+
+def _clipboard_text(fig) -> str:
+    """Best-effort system clipboard read using whichever GUI toolkit
+    is already running the window -- no new dependencies."""
+    try:
+        return fig.canvas.get_tk_widget().clipboard_get()      # TkAgg
+    except Exception:
+        pass
+    try:
+        from matplotlib.backends.qt_compat import QtWidgets    # Qt*Agg
+        return QtWidgets.QApplication.clipboard().text()
+    except Exception:
+        pass
+    try:
+        import tkinter                                         # fallback
+        r = tkinter.Tk()
+        r.withdraw()
+        try:
+            return r.clipboard_get()
+        finally:
+            r.destroy()
+    except Exception:
+        return ""
+
+
+def _set_text_quietly(tb, val: str) -> None:
+    """set_val without firing the box's change/submit observers.
+    TextBox.set_val notifies submit, and the y box's submit is wired
+    to Add -- a paste must fill the box, not commit the fiducial."""
+    was, tb.eventson = tb.eventson, False
+    try:
+        tb.set_val(val)
+    finally:
+        tb.eventson = was
+
+
 def pick_fiducials(cfg: dict) -> None:
     """
     Interactive fiducial picker.
 
         right-click on the image   set the pending pixel
         type stage x / stage y     into the boxes at the bottom
+        Tab                        switch between the two boxes
+        Ctrl+V                     paste into the active box; a pasted
+                                   pair like "18601.5, -20310.8"
+                                   fills both boxes at once
         Add fiducial               commit the pair
         Remove nearest             delete the fiducial nearest the
                                    last right-click
@@ -1854,9 +1901,37 @@ def pick_fiducials(cfg: dict) -> None:
     by = TextBox(fig.add_axes([0.325, 0.06, 0.085, 0.045]), "stage y (um) ")
     status = fig.text(0.05, 0.012, "right-click a fiducial on the image",
                       fontsize=9, color="#555555")
-    fig.text(0.55, 0.012, "scroll = zoom at cursor   middle-drag = pan   "
-                          "+ / - = zoom   f = fit",
+    fig.text(0.55, 0.012, "scroll zoom   middle-drag pan   +/- zoom   "
+                          "f fit   tab next box   ctrl+v paste",
              fontsize=9, color="#555555")
+
+    def on_key(ev):
+        if ev.key == "tab":
+            # Flip focus between the two boxes; from nowhere, start
+            # in x. TextBox ignores the tab keystroke itself, so no
+            # stray character lands in the text.
+            target = by if bx.capturekeystrokes else bx
+            for tb in (bx, by):
+                if tb.capturekeystrokes:
+                    tb.stop_typing()
+            target.begin_typing()
+            fig.canvas.draw_idle()
+        elif ev.key == "ctrl+v":
+            nums = _floats_in(_clipboard_text(fig))
+            if not nums:
+                status.set_text("clipboard has no number in it")
+            elif len(nums) == 1:
+                tb = by if by.capturekeystrokes else bx
+                _set_text_quietly(tb, nums[0])
+                status.set_text(f"pasted {nums[0]}")
+            else:
+                _set_text_quietly(bx, nums[0])
+                _set_text_quietly(by, nums[1])
+                status.set_text(f"pasted x={nums[0]}  y={nums[1]}"
+                                f"  -- check, then Add")
+            fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
 
     def add(_ev=None):
         if pending["px"] is None:

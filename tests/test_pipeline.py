@@ -879,3 +879,32 @@ def test_review_is_dispatched(monkeypatch):
     monkeypatch.setattr(M.sys, "argv", ["microMS_beadtargeting.py", "review"])
     M.main()
     assert called == [True]
+
+
+# ---------------------------------------------------------------------
+# fiducial picker paste parsing
+# ---------------------------------------------------------------------
+
+def test_floats_in_extracts_coordinate_pairs():
+    """Ctrl+V in the picker feeds clipboard text through _floats_in;
+    a stage readout copied with any separator must yield x then y."""
+    assert M._floats_in("18601.5, -20310.8") == ["18601.5", "-20310.8"]
+    assert M._floats_in("18601.5\t-20310.8\n") == ["18601.5", "-20310.8"]
+    assert M._floats_in("x=86083.1 y=-20161.0") == ["86083.1", "-20161.0"]
+    assert M._floats_in("1.2e3 -0.5") == ["1.2e3", "-0.5"]
+    assert M._floats_in("no numbers here") == []
+
+
+def test_set_text_quietly_does_not_fire_submit():
+    """A paste must fill the box without committing: the y box submit
+    is wired to Add, so set_val would add a fiducial mid-paste."""
+    class FakeBox:
+        def __init__(self):
+            self.eventson, self.fired, self.text = True, [], ""
+        def set_val(self, v):
+            self.text = v
+            if self.eventson:
+                self.fired.append(v)
+    tb = FakeBox()
+    M._set_text_quietly(tb, "123.4")
+    assert tb.text == "123.4" and tb.fired == [] and tb.eventson

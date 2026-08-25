@@ -119,6 +119,8 @@ Opens the scan. Coordinate entry is **in the window**, not the terminal.
 |---|---|
 | right-click on the image | set the pending pixel (gold X) |
 | type into stage x / stage y | the measured stage reading |
+| Tab | switch between the two boxes |
+| Ctrl+V | paste; a copied pair like `18601.5, -20310.8` fills both boxes |
 | **Add fiducial** | commit the pair |
 | **Remove nearest** | delete the fiducial nearest the last right-click |
 | **Reset** | clear the list |
@@ -392,7 +394,7 @@ prints the four settings worth checking, in order.
 ```
 python microMS_beadtargeting.py doctor    # environment check
 python microMS_beadtargeting.py convert   # image -> TIFF
-python microMS_beadtargeting.py pick      # click fiducials -> YAML
+python microMS_beadtargeting.py pick      # click fiducials -> saved here
 python microMS_beadtargeting.py select    # bead manual selection
 python microMS_beadtargeting.py check     # registration quality only
 python microMS_beadtargeting.py review    # show planned shots, no export
