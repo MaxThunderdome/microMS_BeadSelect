@@ -9,6 +9,7 @@ Bruker timsTOF fleX. It detects beads in a scan of a matrix-coated slide,
 keeps only isolated single beads, places laser shots on clean matrix just off
 each bead edge, and exports coordinates for flexImaging / autoXecute.
 
+<<<<<<< HEAD
 One user-facing file: `microMS_beadtargeting.py`, holding the whole pipeline
 and a `CONFIG` dict of every tunable parameter at the top.
 
@@ -22,13 +23,37 @@ the file, you have introduced a bug. Put it in `CONFIG` with a comment saying
 what it does and when to change it.
 
 **Never guess a physical constant.** These values are unmeasured and must stay
+=======
+Two user-facing files:
+
+- `microMS_beadtargeting.py` — the whole pipeline, deliberately one file
+- `laser_setup.yaml` — every tunable parameter
+
+## Hard constraints
+
+**Do not split the pipeline into modules.** A collaborating PI (Dr. Elizabeth
+Neumann, UC Davis) runs this and should never have to open a `.py` file. One
+script plus one config is the design, not an accident. Add functions, not
+packages.
+
+**Every tunable belongs in `laser_setup.yaml`.** If you add a magic number to
+the source, you have introduced a bug. Read it from config with a sensible
+default and document it in the YAML with a comment saying what it does and
+when to change it.
+
+**Never guess a physical constant.** Four values are unmeasured and must stay
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 flagged as such until someone reads them off the instrument:
 
 | value | status |
 |---|---|
 | `focal-spot-um: 10` | placeholder |
 | `beam-scan-um: 20` | placeholder |
+<<<<<<< HEAD
 | adapter origin (`name-coordinates.x0-um` / `y0-um`) | unmeasured |
+=======
+| `.xeo` `PlateTypeName` header | unverified against a real fleX export |
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 | `mtp_calibration` | empty; must be measured per instrument |
 
 If asked to "just pick a reasonable default" for any of these, decline and
@@ -42,11 +67,14 @@ copyright with no explicit licence, so behaviour is **reimplemented
 independently**. Only `.xeo` format constants are reproduced verbatim, and they
 are marked `FORMAT SPEC` in the source. Do not copy microMS source.
 
+<<<<<<< HEAD
 **Position names carry coordinates.** `R<region>X<x>Y<y>` encodes physical
 adapter position in 10 µm units on both axes, confirmed by geometry against a
 real run file — not sequence numbers. The `.run` and `.xeo` are matched by name
 alone, so `position_name` is shared by both writers and must stay that way.
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 ## Invariants that look like bugs but are not
 
 **Filter order matters.** Clump screen, then isolation, then size. Isolation
@@ -64,6 +92,7 @@ fiducials is exactly determined and reports a residual of zero, which tells the
 operator nothing. The similarity fit leaves a real residual. Do not "improve"
 this to affine.
 
+<<<<<<< HEAD
 **Shots are dropped only on genuine crater overlap.** Never trim shots to
 satisfy a cosmetic clearance margin.
 
@@ -73,6 +102,10 @@ fell outside it and `run` wrote an empty target list and exited 0. The stage
 enforces its own limits in hardware. If a bounds check is ever genuinely needed,
 the numbers must come from the instrument, not from a plausible-looking
 default.
+=======
+**Shots are dropped only on genuine crater overlap** or for leaving
+`slide-bounds`. Never trim shots to satisfy a cosmetic clearance margin.
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 **`UnitCoord_X/Y` in `.xeo` are plate fractions, not microns.** There are two
 stacked transforms: scan px → stage µm (fiducials), then stage µm → plate
@@ -108,6 +141,7 @@ distance transform per component, making detection O(n × image) — 172 s on an
 8000 px scan. It crops to each component's bounding box first: 1.5 s. Keep it
 that way.
 
+<<<<<<< HEAD
 **cKDTree pads missing neighbours out of range.** `query(k=2)` on a tree with
 one point returns index `len(points)` with distance `inf`. Any `k`-nearest
 query must check the index bound and `isfinite` before indexing. A single
@@ -117,6 +151,40 @@ detected object hit this and crashed `run`.
 collinear fiducials fit perfectly and report RMS 0 while registering badly.
 `check_fiducial_geometry` catches both; do not treat a low residual alone as
 proof of a good registration.
+=======
+**Interactive windows must not show the raw scan.** `imshow` on a full
+75 Mpx scan costs ~750 ms per frame, because matplotlib colour-maps the
+whole array on every draw and never clips it to the visible rectangle.
+`attach_image_lod` hands it a decimated crop of the visible area
+instead (~27 ms), dropping to 1:1 once you zoom in. It keeps the artist
+in ORIGINAL scan pixels via `set_extent`, so `ev.xdata` is still a scan
+pixel and click handlers need no change. Do not "simplify" this back to
+a plain `imshow`.
+
+**Three fiducials is a floor, not a target.** A similarity fit through
+exactly 3 points leaves no spare, so `loo_residuals` returns None and the
+operator sees an in-sample residual only. The picker allows up to
+`max-fiducials` (15) and labels the Add button with the running count.
+It also preloads the existing set, so it reports how many it loaded and
+runs `registration_sanity` on them before the operator adds more -- a
+stale set silently mixed with fresh picks is a bug that has shipped once.
+
+**Commands write into `outputs/<command>_<stamp>/`.** `new_output_dir`
+makes it. Nothing writes into the working directory any more, and a
+re-run never overwrites the previous answer. `review` writes two
+different things on purpose: `slide_overview.png` answers whether the
+selection covers the right deposit, and the per-bead sheets answer
+whether each bead's shots landed sensibly. Do not add shot angles to the
+overview -- at slide scale the crater is sub-pixel and the marks would
+be noise.
+
+**`Detect in box` re-runs every filter over the union.** Isolation is a
+property of the whole object list, so appending newly found objects to
+an already-filtered list would leave them invisible to their
+neighbours' isolation test. It also widens `detection.roi` on close via
+`save_roi`, because `run` only looks inside the ROI and would otherwise
+silently discard every override made outside it.
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 **Apply edits once.** Two regressions in this file came from patch scripts that
 double-applied or spliced across a region boundary, deleting whole functions
@@ -133,6 +201,10 @@ python microMS_beadtargeting.py convert   # image -> TIFF
 python microMS_beadtargeting.py pick      # click fiducials -> YAML
 python microMS_beadtargeting.py select    # bead manual selection
 python microMS_beadtargeting.py check     # registration quality only
+<<<<<<< HEAD
+=======
+python microMS_beadtargeting.py review    # per-bead shot confirmation sheets
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 python microMS_beadtargeting.py run       # detect, filter, shoot, export
 python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 
@@ -149,6 +221,7 @@ that is the point of them. Keep them.
 
 Prefer showing results in the terminal over writing extra files.
 
+<<<<<<< HEAD
 ## Divergence from microMS
 
 `DIVERGENCE.md` is the record of what uses microMS directly, what is ported to
@@ -173,6 +246,8 @@ populations or imaging each object.
 The two acknowledged gaps worth implementing are a threshold view and manual
 bead addition. Both are specified in that document.
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 ## Current open work
 
 - Measure `mtp_calibration` on the instrument; ask Dr. Neumann first for the

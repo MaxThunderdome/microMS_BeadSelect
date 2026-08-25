@@ -6,8 +6,13 @@ microMS_beadtargeting.py
 Image-guided MALDI-MSI targeting of SPPS resin beads on ITO slides,
 for a Bruker timsTOF fleX.
 
+<<<<<<< HEAD
 Every tunable parameter lives in the CONFIG dict near the top of
 this file.
+=======
+Every tunable parameter lives in laser_setup.yaml. Do not edit this
+file to change geometry.
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 The workflow ordering, the point-based similarity registration, the
 nearest-neighbour distance filter and the fiducial click-training
@@ -30,7 +35,11 @@ Usage
     python microMS_beadtargeting.py pick      # click fiducials -> YAML
     python microMS_beadtargeting.py select    # bead manual selection
     python microMS_beadtargeting.py check     # registration quality only
+<<<<<<< HEAD
     python microMS_beadtargeting.py review    # click beads in/out of the run
+=======
+    python microMS_beadtargeting.py review    # confirmation sheets of the shots
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     python microMS_beadtargeting.py run       # detect, filter, shoot, export
     python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 
@@ -43,14 +52,26 @@ from __future__ import annotations
 import csv
 import math
 import sys
+<<<<<<< HEAD
+=======
+from datetime import datetime
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+<<<<<<< HEAD
 from scipy.spatial import cKDTree
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = Path(__file__).resolve()
+=======
+import yaml
+from scipy.spatial import cKDTree
+
+HERE = Path(__file__).resolve().parent
+CONFIG_PATH = HERE / "laser_setup.yaml"
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 XEO_MAX_POSITIONS = 400          # autoXecute per-file cap
 
@@ -93,7 +114,11 @@ def banner(cmd: str) -> None:
         log(f"script dir  {HERE}")
         log(f"config      {CONFIG_PATH}"
             f"{'' if CONFIG_PATH.exists() else '   MISSING'}")
+<<<<<<< HEAD
         for mod in ("numpy", "scipy", "cv2", "matplotlib"):
+=======
+        for mod in ("numpy", "yaml", "scipy", "cv2", "matplotlib"):
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
             try:
                 m = __import__(mod)
                 log(f"{mod:11s} {getattr(m, '__version__', '?')}")
@@ -105,6 +130,7 @@ def banner(cmd: str) -> None:
 # CONFIG
 # =====================================================================
 
+<<<<<<< HEAD
 # Filled in by:  python microMS_beadtargeting.py pick
 # x_px/y_px = pixel in the scan.  x_um/y_um = stage reading in microns.
 #
@@ -394,10 +420,32 @@ def load_config(path=None) -> dict:
     import copy
     cfg = copy.deepcopy(CONFIG)
     cfg["fiducials"] = [dict(f) for f in FIDUCIALS]
+=======
+def load_config(path: Path = CONFIG_PATH) -> dict:
+    if not path.exists():
+        sys.exit(f"Config not found: {path}\n"
+                 f"laser_setup.yaml must sit beside "
+                 f"microMS_beadtargeting.py.")
+    log(f"reading {path.name}")
+    try:
+        with open(path) as fh:
+            cfg = yaml.safe_load(fh)
+    except yaml.YAMLError as e:
+        sys.exit(f"laser_setup.yaml is not valid YAML:\n  {e}")
+    if not isinstance(cfg, dict):
+        sys.exit(f"laser_setup.yaml did not parse to a mapping.")
+
+    required = ["laser-shot-angles", "shot-placement", "min-bead-separation",
+                "bead-diameter", "fiducials"]
+    missing = [k for k in required if k not in cfg]
+    if missing:
+        sys.exit(f"laser_setup.yaml is missing required keys: {missing}")
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
     if not cfg["laser-shot-angles"]:
         sys.exit("laser-shot-angles is empty; nothing to fire.")
 
+<<<<<<< HEAD
     sus = float(cfg.get("suspect-diameter-tolerance", 0.2))
     acc = float(cfg.get("bead-diameter-tolerance", 0.35))
     if sus >= acc:
@@ -447,6 +495,73 @@ def save_fiducials(fids: list[dict], path: Path = None) -> None:
     block.append("]")
 
     path.write_text("\n".join(lines[:start] + block + lines[end + 1:]) + "\n")
+=======
+    ref = cfg["shot-placement"].get("distance-reference")
+    if ref not in ("edge", "center"):
+        sys.exit(f"shot-placement.distance-reference must be "
+                 f"'edge' or 'center', got {ref!r}")
+    log(f"config OK: {len(cfg.get('fiducials') or [])} fiducials, "
+        f"{len(cfg.get('mtp_calibration') or [])} MTP positions, "
+        f"reference={ref}")
+    return cfg
+
+
+def save_fiducials(fids: list[dict], path: Path = CONFIG_PATH) -> None:
+    """Rewrite only the fiducials: block, leaving all comments intact."""
+    lines = path.read_text().splitlines()
+
+    start = next((i for i, ln in enumerate(lines)
+                  if ln.startswith("fiducials:")), None)
+    if start is None:
+        sys.exit("Could not find a 'fiducials:' key in laser_setup.yaml")
+
+    end = start + 1
+    while end < len(lines):
+        ln = lines[end]
+        if ln.strip() == "" or (ln[0] not in " -"):
+            break
+        end += 1
+
+    if fids:
+        block = ["fiducials:"]
+        for f in fids:
+            block += [f"  - x_px: {f['x_px']:.2f}",
+                      f"    y_px: {f['y_px']:.2f}",
+                      f"    x_um: {f['x_um']:.2f}",
+                      f"    y_um: {f['y_um']:.2f}"]
+    else:
+        block = ["fiducials: []"]
+
+    path.write_text("\n".join(lines[:start] + block + lines[end:]) + "\n")
+
+
+def save_roi(x0: int, y0: int, x1: int, y1: int,
+             path: Path = CONFIG_PATH) -> bool:
+    """
+    Rewrite the four detection.roi values in place, leaving every
+    comment intact. Returns False if the block is not in the expected
+    shape, in which case the caller must tell the operator to edit it
+    by hand rather than pretend it was saved.
+    """
+    lines = path.read_text().splitlines()
+    try:
+        i = next(k for k, ln in enumerate(lines) if ln.rstrip() == "  roi:")
+    except StopIteration:
+        return False
+    want = {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+    seen = set()
+    for k in range(i + 1, min(i + 12, len(lines))):
+        stripped = lines[k].strip()
+        for key, val in want.items():
+            if stripped.startswith(f"{key}:"):
+                indent = lines[k][:len(lines[k]) - len(lines[k].lstrip())]
+                lines[k] = f"{indent}{key}: {val}"
+                seen.add(key)
+    if seen != set(want):
+        return False
+    path.write_text("\n".join(lines) + "\n")
+    return True
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 
 def footprint_um(cfg: dict) -> float:
@@ -543,6 +658,7 @@ def loo_residuals(src, dst, allow_reflection=True) -> np.ndarray | None:
     return out
 
 
+<<<<<<< HEAD
 def to_microns(T: Transform, cfg: dict) -> Transform:
     """
     Rescale a fitted transform so it outputs MICRONS.
@@ -557,6 +673,53 @@ def to_microns(T: Transform, cfg: dict) -> Transform:
         return T
     k = PLATE_UNIT_UM
     return Transform(T.scale * k, T.R, T.t * k)
+=======
+def registration_sanity(src, dst, res, cfg) -> list[str]:
+    """
+    Catch fiducial sets that fit too well to be real, and sets whose
+    geometry cannot constrain the fit.
+
+    A similarity transform has 4 degrees of freedom and n fiducials
+    supply 2n equations, so from 3 points on the fit is overdetermined
+    by at least two. Clicking a mark on a scan is not exact, so a
+    genuine hand-picked set always leaves a residual of order a micron.
+    A residual of essentially zero means the numbers were generated
+    from a transform rather than read off a slide -- a placeholder that
+    reports a perfect score. That is the most dangerous state this file
+    can be in, because it loads cleanly and fires in the wrong place.
+
+    Near-collinear fiducials are the opposite failure: the fit is
+    poorly conditioned about the axis through them, so rotation and
+    scale stay badly determined even though the residual looks small.
+    Three marks along one edge of a slide do exactly this.
+    """
+    notes = []
+    floor = float(cfg.get("min-fiducial-residual-um", 0.05))
+    if res.max() < floor:
+        notes.append(
+            f"Fiducial residual is {res.max():.4f} um, below "
+            f"min-fiducial-residual-um ({floor} um). A similarity fit "
+            f"through {len(src)} points is overdetermined, so real "
+            "clicks cannot fit it this exactly. These fiducials look "
+            "SYNTHETIC -- generated from a transform, not picked off "
+            "this scan. Re-run:  python microMS_beadtargeting.py pick")
+
+    # Condition of the point geometry: ratio of the smaller to the
+    # larger singular value of the centred pixel coordinates. Near 1 is
+    # a well-spread triangle, 0 is exactly collinear.
+    c = np.asarray(src, float)
+    c = c - c.mean(axis=0)
+    sv = np.linalg.svd(c, compute_uv=False)
+    cond = float(sv[-1] / sv[0]) if sv[0] > 0 else 0.0
+    floor_c = float(cfg.get("min-fiducial-spread", 0.10))
+    if cond < floor_c:
+        notes.append(
+            f"Fiducials are nearly collinear (spread {cond:.3f} < "
+            f"min-fiducial-spread {floor_c}). Rotation and scale are "
+            "poorly constrained across the axis through them. Spread "
+            "the marks over the slide, not along one edge.")
+    return notes
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 
 def transform_from_config(cfg: dict) -> Transform:
@@ -569,6 +732,7 @@ def transform_from_config(cfg: dict) -> Transform:
     return fit_similarity(src, dst, cfg.get("allow-reflection", True))
 
 
+<<<<<<< HEAD
 def check_fiducial_geometry(src: np.ndarray, tol: float = 0.05) -> list[str]:
     """
     Catch fiducial layouts that fit perfectly and register badly.
@@ -603,6 +767,8 @@ def check_fiducial_geometry(src: np.ndarray, tol: float = 0.05) -> list[str]:
     return warn
 
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 def report_registration(cfg: dict) -> Transform:
     fids = cfg["fiducials"]
     src = np.array([[f["x_px"], f["y_px"]] for f in fids], float)
@@ -625,6 +791,7 @@ def report_registration(cfg: dict) -> Transform:
         print(f" {i:2d} {f['x_px']:9.1f} {f['y_px']:9.1f} "
               f"{f['x_um']:12.1f} {f['y_um']:12.1f} {r:10.2f}{flag}")
 
+<<<<<<< HEAD
     rec = int(cfg.get("recommended-fiducials", 12))
     if len(fids) < rec:
         factor = (rec / len(fids)) ** 0.5
@@ -634,6 +801,8 @@ def report_registration(cfg: dict) -> Transform:
               f"The fiducial set was the only factor that\n  significantly "
               f"affected accuracy in their ANOVA.")
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     loo = loo_residuals(src, dst, cfg.get("allow-reflection", True))
     if loo is None:
         print("\nLeave-one-out  : needs >=4 fiducials (have "
@@ -643,13 +812,22 @@ def report_registration(cfg: dict) -> Transform:
         print(f"\nLeave-one-out  : RMS {np.sqrt((loo ** 2).mean()):.2f} um, "
               f"max {loo.max():.2f} um")
 
+<<<<<<< HEAD
     for w in check_fiducial_geometry(src):
         print(f"\nWARNING: {w}")
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     if res.max() > limit:
         print(f"\nWARNING: a fiducial exceeds max-fiducial-residual-um "
               f"({limit} um). Check for a mistyped stage coordinate or a "
               f"misclicked mark before trusting any targets.")
+<<<<<<< HEAD
+=======
+
+    for note in registration_sanity(src, dst, res, cfg):
+        print(f"\nWARNING: {note}")
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     return T
 
 
@@ -920,12 +1098,15 @@ def isolation_filter(beads: list[Bead], min_sep_um: float) -> None:
         for b in beads:
             b.nn_um = float("inf")
         return
+<<<<<<< HEAD
 
     # Same rule as microMS blobList.distanceFilter: a blob fails if
     # ANY neighbour is closer than the cutoff, and both members of a
     # too-close pair fail. Recording the nearest-neighbour distance
     # and comparing it to the cutoff is equivalent, and keeps the
     # number for the CSV and the histogram.
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     pts = np.array([[b.x_um, b.y_um] for b in beads], float)
     dist, _ = cKDTree(pts).query(pts, k=2)
     for b, dd in zip(beads, dist[:, 1]):
@@ -967,6 +1148,7 @@ def shape_filter(beads: list[Bead], cfg: dict) -> None:
 # SHOT PLACEMENT
 # =====================================================================
 
+<<<<<<< HEAD
 def suspect_radius(bead: "Bead", cfg: dict) -> bool:
     """
     True when this bead's measured diameter is far enough from nominal
@@ -988,18 +1170,24 @@ def suspect_radius(bead: "Bead", cfg: dict) -> bool:
     return abs(bead.diameter_um - nominal) > tol * nominal
 
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 @dataclass
 class Shot:
     bead_id: int
     angle_deg: float
     x_um: float
     y_um: float
+<<<<<<< HEAD
     x_px: float = 0.0
     y_px: float = 0.0
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     dropped: bool = False
     drop_reason: str = ""
 
 
+<<<<<<< HEAD
 def circular_pack(radius_um: float, cfg: dict) -> list[float]:
     """
     Angles for one bead, following microMS's
@@ -1040,6 +1228,8 @@ def circular_pack(radius_um: float, cfg: dict) -> list[float]:
     return [rot + 360.0 * k / n for k in range(n)]
 
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 def shot_radius(bead: Bead, cfg: dict) -> float:
     """Distance from bead centre to shot centre."""
     sp = cfg["shot-placement"]
@@ -1052,12 +1242,19 @@ def shot_radius(bead: Bead, cfg: dict) -> float:
     return r + float(sp["edge-offset"])
 
 
+<<<<<<< HEAD
 def place_shots(beads: list[Bead], cfg: dict,
                 T: "Transform | None" = None) -> list[Shot]:
     fixed_angles = [float(a) for a in cfg["laser-shot-angles"]]
     dynamic = cfg["shot-placement"].get("dynamic-spots", False)
     T_um_per_px = T.um_per_px if T is not None else 0.0
     crater = footprint_um(cfg)
+=======
+def place_shots(beads: list[Bead], cfg: dict) -> list[Shot]:
+    angles = [float(a) for a in cfg["laser-shot-angles"]]
+    crater = footprint_um(cfg)
+    bounds = cfg["slide-bounds"]
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     enforce = cfg.get("enforce-bead-clearance", True)
 
     all_pts = np.array([[b.x_um, b.y_um] for b in beads], float) \
@@ -1069,6 +1266,7 @@ def place_shots(beads: list[Bead], cfg: dict,
         if not b.accepted:
             continue
         R = shot_radius(b, cfg)
+<<<<<<< HEAD
         # microMS sizes the ring from the bead; the fixed list is the
         # simpler alternative.
         angles = (circular_pack(b.diameter_um / 2.0, cfg) if dynamic
@@ -1089,16 +1287,34 @@ def place_shots(beads: list[Bead], cfg: dict,
             # own limits in hardware; a guessed coordinate window here
             # silently discarded entire target lists.
             if enforce and (R - crater / 2.0) < (b.diameter_um / 2.0):
+=======
+        ring: list[Shot] = []
+        for a in angles:
+            rad = math.radians(a)
+            s = Shot(i, a, b.x_um + R * math.cos(rad),
+                     b.y_um + R * math.sin(rad))
+
+            if not (bounds["x_min"] <= s.x_um <= bounds["x_max"] and
+                    bounds["y_min"] <= s.y_um <= bounds["y_max"]):
+                s.dropped, s.drop_reason = True, "outside slide bounds"
+
+            elif enforce and (R - crater / 2.0) < (b.diameter_um / 2.0):
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
                 s.dropped, s.drop_reason = True, "crater overlaps own bead"
 
             elif enforce and tree is not None:
                 # nearest OTHER object, whether or not it was accepted
+<<<<<<< HEAD
                 # cKDTree pads missing neighbours with distance inf and
                 # index == len(points), which is out of range. With a
                 # single detected object k=2 always returns one such
                 # pad, so this must be checked before indexing.
                 for d, j in zip(*tree.query([s.x_um, s.y_um], k=2)):
                     if j == i or j >= len(beads) or not math.isfinite(d):
+=======
+                for d, j in zip(*tree.query([s.x_um, s.y_um], k=2)):
+                    if j == i:
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
                         continue
                     edge = beads[j].diameter_um / 2.0
                     if d - crater / 2.0 < edge:
@@ -1164,6 +1380,7 @@ def write_csv(path: Path, beads: list[Bead], shots: list[Shot]) -> None:
 # requires the exact strings; the 13-line header and 12-line footer
 # are what make microMS's own lines[13:-12] position slice work.
 #
+<<<<<<< HEAD
 # PlateTypeName is CONFIRMED. A real autoXecute run file from the
 # target instrument (Imaging_Run.run, AutoExecute 7.6.6.0) carries
 # baseGeometry="MTP Slide Adapter II" -- exactly the string below.
@@ -1289,10 +1506,50 @@ def mtp_name_to_unit(name: str) -> tuple[float, float] | None:
     if row in MTP_MAP_Y and col in MTP_MAP_X:
         return MTP_MAP_X[col], MTP_MAP_Y[row]
     return None
+=======
+# UNVERIFIED: the PlateTypeName string has not been confirmed against
+# a real timsTOF fleX export. Diff a genuine flexImaging .xeo against
+# a file from this writer before an acquisition run.
+# =====================================================================
+
+XEO_HEADER = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<PlateSpotFile>',
+    '  <FileFormatVersion>1.0</FileFormatVersion>',
+    '  <PlateTypeName>MTP Slide Adapter II</PlateTypeName>',
+    '  <PlateTypeID>MTP Slide Adapter II</PlateTypeID>',
+    '  <Comment>Generated by microMS_beadtargeting.py</Comment>',
+    '  <PlateGeometry>',
+    '    <UnitOriginX>0.0</UnitOriginX>',
+    '    <UnitOriginY>0.0</UnitOriginY>',
+    '    <UnitWidth>1.0</UnitWidth>',
+    '    <UnitHeight>1.0</UnitHeight>',
+    '  </PlateGeometry>',
+    '  <SpotList>',
+]                                                   # 13 lines
+
+XEO_FOOTER = [
+    '  </SpotList>',
+    '  <PlateProperties>',
+    '    <TeachPointCount>0</TeachPointCount>',
+    '    <SpotShape>Circle</SpotShape>',
+    '    <SpotDiameter>0.0</SpotDiameter>',
+    '  </PlateProperties>',
+    '  <GeneratorInfo>',
+    '    <Software>microMS_beadtargeting</Software>',
+    '    <Version>1.0</Version>',
+    '    <Note>Header UNVERIFIED against a real fleX export</Note>',
+    '  </GeneratorInfo>',
+    '</PlateSpotFile>',
+]                                                   # 12 lines
+
+assert len(XEO_HEADER) == 13 and len(XEO_FOOTER) == 12
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 
 def fit_mtp(cfg: dict) -> Transform | None:
     """
+<<<<<<< HEAD
     Stage microns -> UnitCoord, the signed plate fraction a .xeo uses.
 
     UnitCoord is NOT microns and NOT a 0-1 fraction. It runs about
@@ -1372,10 +1629,42 @@ def fit_mtp(cfg: dict) -> Transform | None:
     if abs(1 / M.um_per_px / 1000 - mm_per_unit) > 0.5:
         print("  WARNING: recovered scale disagrees with the header. Check "
               "the measured\n  stage coordinates and the position names.")
+=======
+    Second, stacked registration: stage microns -> plate FRACTION.
+
+    UnitCoord_X/Y in a .xeo are fractions of the plate, not microns.
+    Without three measured named MTP positions there is no defensible
+    conversion, so this returns None and the .xeo is skipped.
+    """
+    cal = cfg.get("mtp_calibration") or []
+    if len(cal) < 3:
+        return None
+    src = np.array([[c["x_um"], c["y_um"]] for c in cal], float)
+    dst = np.array([[c["unit_x"], c["unit_y"]] for c in cal], float)
+    M = fit_similarity(src, dst, allow_reflection=True)
+
+    # A similarity fit assumes UnitCoord_X and UnitCoord_Y share one
+    # scale. If they are instead normalised independently to plate
+    # width and height, a non-square plate makes that assumption wrong
+    # and the residual below will be large. Three points cannot
+    # distinguish the two cases any other way, so it is reported
+    # rather than silently absorbed.
+    res = np.linalg.norm(M.px_to_um(src) - dst, axis=1)
+    span = float(np.linalg.norm(dst.max(0) - dst.min(0))) or 1.0
+    print(f"\nMTP fit        : {len(cal)} positions, "
+          f"max residual {res.max():.5f} unit "
+          f"({100 * res.max() / span:.2f}% of span)")
+    if res.max() / span > 0.01:
+        print("  WARNING: poor fit. UnitCoord_X/Y may be normalised "
+              "independently to\n  plate width and height, which a uniform "
+              "scale cannot represent. Measure\n  a 4th position and check "
+              "before trusting these coordinates.")
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     return M
 
 
 def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
+<<<<<<< HEAD
               cfg: dict, M: "Transform | None" = None) -> list[Path]:
     """
     Write .xeo files using microMS's own brukerMapper.writeXEO.
@@ -1417,10 +1706,34 @@ def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
         blobs = [flex_mapper.make_blob(s.x_px, s.y_px) for s in chunk]
         out = prefix.with_name(f"{prefix.name}_{n:03d}.xeo")
         mapper.saveInstrumentFile(str(out), blobs)
+=======
+              M: Transform) -> list[Path]:
+    """Write .xeo files, splitting at the 400-position autoXecute cap."""
+    written = []
+    chunks = [shots[i:i + XEO_MAX_POSITIONS]
+              for i in range(0, len(shots), XEO_MAX_POSITIONS)] or [[]]
+
+    for n, chunk in enumerate(chunks, start=1):
+        pts = np.array([[s.x_um, s.y_um] for s in chunk], float) \
+            if chunk else np.zeros((0, 2))
+        unit = M.px_to_um(pts) if len(pts) else pts
+
+        body = []
+        for k, (s, u) in enumerate(zip(chunk, unit)):
+            name = f"B{s.bead_id:04d}_A{int(s.angle_deg):03d}"
+            body.append(
+                f'    <Spot ID="{k + 1}" SpotName="{name}" '
+                f'PositionName="{name}" '
+                f'UnitCoord_X="{u[0]:.6f}" UnitCoord_Y="{u[1]:.6f}" />')
+
+        out = prefix.with_name(f"{prefix.name}_{n:03d}.xeo")
+        out.write_text("\n".join(XEO_HEADER + body + XEO_FOOTER) + "\n")
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
         written.append(out)
     return written
 
 
+<<<<<<< HEAD
 def _calibration_rows(cfg: dict) -> list[dict]:
     """mtp_calibration as rows, whether inline or a Coords.txt path."""
     cal = cfg.get("mtp_calibration") or []
@@ -1440,11 +1753,14 @@ def _calibration_rows(cfg: dict) -> list[dict]:
     return rows
 
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 def read_xeo(path: Path) -> list[str]:
     """microMS's position slice: 13 header lines, 12 footer lines."""
     return path.read_text().splitlines()[13:-12]
 
 
+<<<<<<< HEAD
 
 # =====================================================================
 # EXPORT -- flexImaging .txt
@@ -1609,6 +1925,8 @@ def read_run(path: Path) -> list[str]:
     return re.findall(r'Pos_on_Scout="([^"]+)"', path.read_text())
 
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 # =====================================================================
 # QC OVERLAY
 # =====================================================================
@@ -1679,6 +1997,209 @@ def draw_overlay(path: Path, beads: list[Bead], shots: list[Shot],
 
 
 
+<<<<<<< HEAD
+=======
+# Everything a command writes goes under outputs/, in its own folder
+# named for the command and the moment it ran. Re-running never
+# overwrites the previous answer, and the folder is a complete record
+# of one invocation rather than files from different runs mixed
+# together in the working directory.
+OUTPUT_ROOT = HERE / "outputs"
+
+
+def new_output_dir(command: str, cfg: dict, stamp: str) -> Path:
+    """
+    outputs/<command>_<date>_<time>/ , created.
+
+    Set output.per-run-folder false to write straight into outputs/
+    instead, which overwrites in place -- useful only if something
+    downstream expects a fixed path.
+    """
+    root = HERE / str((cfg.get("output") or {}).get("directory", "outputs"))
+    if not (cfg.get("output") or {}).get("per-run-folder", True):
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    slug = stamp.replace(" ", "_").replace(":", "")
+    out = root / f"{command}_{slug}"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def draw_review_overview(path: Path, beads: list[Bead], cfg: dict,
+                         scan: Path | None, stamp: str) -> bool:
+    """
+    The whole slide at a glance: which beads are targeted and which are
+    not. No shot pattern -- at slide scale a 30 um crater is a fraction
+    of a pixel, so drawing the angles here would be noise. The per-bead
+    panels carry the shot geometry; this answers the different question
+    of whether the selection covers the deposit you meant.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return False
+    if scan is None or not scan.exists():
+        return False
+    img = cv2.imread(str(scan), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return False
+
+    rv = cfg.get("review") or {}
+    long_edge = int(rv.get("overview-px", 2400))
+    sc = min(1.0, long_edge / max(img.shape[:2]))
+    vis = cv2.cvtColor(cv2.resize(img, None, fx=sc, fy=sc,
+                                  interpolation=cv2.INTER_AREA),
+                       cv2.COLOR_GRAY2BGR)
+    head = 64
+    vis = cv2.copyMakeBorder(vis, head, 0, 0, 0, cv2.BORDER_CONSTANT,
+                             value=(32, 32, 32))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    acc = [b for b in beads if b.accepted]
+    # Draw rejects first so a target is never hidden under one.
+    for b in beads:
+        if b.accepted:
+            continue
+        col = (180, 60, 140) if b.clumped else (0, 0, 225)
+        cv2.circle(vis, (int(b.x_px * sc), int(b.y_px * sc) + head), 2,
+                   col, -1)
+    for b in acc:
+        p = (int(b.x_px * sc), int(b.y_px * sc) + head)
+        r = max(int(b.diameter_px / 2 * sc), 4)
+        cv2.circle(vis, p, r + 5, (0, 220, 0), 2)
+
+    cv2.putText(vis, f"Targeted beads, whole slide   {stamp}", (10, 28),
+                font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(vis, f"green ring = targeted ({len(acc)})   "
+                     f"red dot = rejected   purple dot = clumped   "
+                     f"total objects {len(beads)}",
+                (10, 52), font, 0.5, (170, 170, 170), 1, cv2.LINE_AA)
+    cv2.imwrite(str(path), vis)
+    return True
+
+
+def draw_shot_review(beads: list[Bead], cfg: dict, T: Transform,
+                     scan: Path | None, stamp: str,
+                     outdir: Path) -> list[Path]:
+    """
+    One small panel per accepted bead, showing that bead and the shots
+    around it with each shot labelled by its angle.
+
+    'run' already writes a whole-slide overlay and one high-magnification
+    zoom, but the zoom only covers the densest patch. Before firing, the
+    question is whether EVERY bead you selected got sensible shots, so
+    this renders them all and paginates rather than sampling. A dropped
+    shot is drawn as a hollow ring, so a bead that will be fired with
+    fewer than the full pattern is obvious at a glance.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return []
+    if scan is None or not scan.exists():
+        return []
+    acc = [b for b in beads if b.accepted]
+    if not acc:
+        return []
+    img = cv2.imread(str(scan), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return []
+
+    rv = cfg.get("review") or {}
+    win = int(rv.get("panel-px", 160))
+    sc = int(rv.get("panel-scale", 3))
+    cols = int(rv.get("columns", 6))
+    per = int(rv.get("max-panels-per-sheet", 36))
+
+    P = win * sc                       # panel side, in output pixels
+    cap = 30                           # caption strip under each panel
+    pad = 8
+    head = 74
+    crater_px = footprint_um(cfg) / T.um_per_px
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    pages = [acc[i:i + per] for i in range(0, len(acc), per)]
+    written = []
+
+    for pno, page in enumerate(pages, 1):
+        rows = (len(page) + cols - 1) // cols
+        W = pad + cols * (P + pad)
+        H = head + pad + rows * (P + cap + pad)
+        sheet = np.full((H, W, 3), 32, np.uint8)
+
+        title = f"Laser shot confirmation   {stamp}"
+        sub = (f"sheet {pno} of {len(pages)}   |   "
+               f"{len(acc)} accepted beads   |   "
+               f"{len(cfg['laser-shot-angles'])} shots per bead at "
+               f"{cfg['laser-shot-angles']} deg   |   "
+               f"filled = will fire, hollow = dropped")
+        cv2.putText(sheet, title, (pad, 30), font, 0.8, (255, 255, 255), 2,
+                    cv2.LINE_AA)
+        cv2.putText(sheet, sub, (pad, 58), font, 0.45, (170, 170, 170), 1,
+                    cv2.LINE_AA)
+
+        for k, b in enumerate(page):
+            r, c = divmod(k, cols)
+            ox = pad + c * (P + pad)
+            oy = head + pad + r * (P + cap + pad)
+
+            # Crop the scan around the bead, clamped at the edges, then
+            # paste into a fixed-size tile so the grid stays aligned.
+            cx, cy = int(round(b.x_px)), int(round(b.y_px))
+            half = win // 2
+            x0, y0 = cx - half, cy - half
+            sx0, sy0 = max(x0, 0), max(y0, 0)
+            sx1 = min(x0 + win, img.shape[1])
+            sy1 = min(y0 + win, img.shape[0])
+            tile = np.zeros((win, win), np.uint8)
+            if sx1 > sx0 and sy1 > sy0:
+                tile[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = \
+                    img[sy0:sy1, sx0:sx1]
+            vis = cv2.resize(cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR),
+                             (P, P), interpolation=cv2.INTER_NEAREST)
+
+            def to_panel(px, py):
+                return int(round((px - x0) * sc)), int(round((py - y0) * sc))
+
+            cv2.circle(vis, to_panel(b.x_px, b.y_px),
+                       max(int(b.diameter_px / 2 * sc), 3), (0, 200, 0), 2)
+
+            for sh in b.shots:
+                sp = T.um_to_px([sh.x_um, sh.y_um])[0]
+                pt = to_panel(sp[0], sp[1])
+                rad = max(int(crater_px / 2 * sc), 3)
+                if sh.dropped:
+                    cv2.circle(vis, pt, rad, (0, 165, 255), 2)
+                else:
+                    cv2.circle(vis, pt, rad, (230, 120, 0), -1)
+                lab = f"{int(round(sh.angle_deg))}"
+                cv2.putText(vis, lab, (pt[0] + rad + 3, pt[1] - rad - 2),
+                            font, 0.42, (255, 235, 190), 1, cv2.LINE_AA)
+
+            sheet[oy:oy + P, ox:ox + P] = vis
+
+            kept = sum(1 for s in b.shots if not s.dropped)
+            note = (f"#{beads.index(b)}  d={b.diameter_um:.0f}um  "
+                    f"nn={b.nn_um:.0f}um  {kept}/{len(b.shots)} shots")
+            colour = ((255, 255, 255) if kept == len(b.shots)
+                      else (0, 190, 255))
+            cv2.putText(sheet, note, (ox + 2, oy + P + 20), font, 0.42,
+                        colour, 1, cv2.LINE_AA)
+
+        # Human-readable stamp in the picture, filesystem-safe in the
+        # name -- no spaces or colons, so it survives a copy to the
+        # instrument PC and sorts chronologically in a directory listing.
+        slug = stamp.replace(" ", "_").replace(":", "")
+        suffix = f"_sheet{pno:02d}" if len(pages) > 1 else ""
+        out = outdir / f"shot_confirmation_{slug}{suffix}.png"
+        cv2.imwrite(str(out), sheet)
+        written.append(out)
+
+    return written
+
+
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 def draw_zoom(path: Path, beads: list[Bead], cfg: dict, T: Transform,
               scan: Path | None) -> bool:
     """
@@ -1758,11 +2279,32 @@ def pick_fiducials(cfg: dict) -> None:
 
         right-click on the image   set the pending pixel
         type stage x / stage y     into the boxes at the bottom
+<<<<<<< HEAD
         Add fiducial               commit the pair
         Remove nearest             delete the fiducial nearest the
                                    last right-click
         Reset                      clear the list
         close the window           write FIDUCIALS into this file
+=======
+        Add fiducial               commit the pair, repeatedly, up to
+                                   max-fiducials (15 by default)
+        Remove nearest             delete the fiducial nearest the
+                                   last right-click
+        Reset                      clear the list
+        close the window           write laser_setup.yaml
+
+    Three fiducials is the minimum for a similarity fit. FOUR OR MORE
+    is what you actually want: leave-one-out cross validation needs a
+    spare point, and without it the reported residual is in-sample and
+    flatters the fit. The button label carries the running count so the
+    minimum is not mistaken for a maximum.
+
+    The list is PRELOADED from laser_setup.yaml so a session can be
+    resumed. That is also a trap -- picking three fresh marks on top of
+    a stale set silently mixes them -- so the picker says how many it
+    loaded and runs the same sanity checks 'check' does before you
+    start adding.
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
     Coordinate entry is IN THE WINDOW, not the terminal. An earlier
     version prompted with input() from inside the click callback,
@@ -1798,27 +2340,55 @@ def pick_fiducials(cfg: dict) -> None:
                  f"  python microMS_beadtargeting.py convert <file>")
 
     fids: list[dict] = list(cfg.get("fiducials") or [])
+<<<<<<< HEAD
     pending = {"px": None}
 
     fig = plt.figure(figsize=(14, 10))
     ax = fig.add_axes([0.05, 0.16, 0.92, 0.79])
     ax.imshow(img, cmap="gray")
+=======
+    preloaded = len(fids)
+    max_f = int(cfg.get("max-fiducials", 10))
+    pending = {"px": None}
+    btn = {}                      # filled in once the buttons exist
+
+    fig = plt.figure(figsize=(14, 10))
+    ax = fig.add_axes([0.05, 0.16, 0.92, 0.79])
+    attach_image_lod(ax, img, cfg)
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
     def redraw():
         for art in list(ax.lines) + list(ax.texts):
             art.remove()
         worst = -1
+<<<<<<< HEAD
         title = f"{len(fids)} fiducials  (3 needed)"
+=======
+        hint = ("3 minimum" if len(fids) < 3 else
+                "add a 4th to enable leave-one-out" if len(fids) == 3 else
+                "leave-one-out active")
+        title = f"{len(fids)} of up to {max_f} fiducials  ({hint})"
+        if "add" in btn:
+            btn["add"].label.set_text(f"Add fiducial  {len(fids)}/{max_f}")
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
         if len(fids) >= 3:
             src = np.array([[f["x_px"], f["y_px"]] for f in fids], float)
             dst = np.array([[f["x_um"], f["y_um"]] for f in fids], float)
             T = fit_similarity(src, dst, cfg.get("allow-reflection", True))
             res = residuals(T, src, dst)
             worst = int(np.argmax(res))
+<<<<<<< HEAD
             title = (f"{len(fids)} fiducials | RMS "
                      f"{np.sqrt((res ** 2).mean()):.1f} um | worst "
                      f"{res[worst]:.1f} um | {T.um_per_px:.3f} um/px"
                      + (" | REFLECTED" if T.reflected else ""))
+=======
+            title = (f"{len(fids)}/{max_f} | RMS "
+                     f"{np.sqrt((res ** 2).mean()):.1f} um | worst "
+                     f"{res[worst]:.1f} um | {T.um_per_px:.3f} um/px"
+                     + (" | REFLECTED" if T.reflected else "")
+                     + ("" if len(fids) >= 4 else "  (in-sample only)"))
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
         for i, f in enumerate(fids):
             c = "red" if i == worst else "lime"
             ax.plot(f["x_px"], f["y_px"], "+", ms=16, mew=2, color=c)
@@ -1850,6 +2420,14 @@ def pick_fiducials(cfg: dict) -> None:
              fontsize=9, color="#555555")
 
     def add(_ev=None):
+<<<<<<< HEAD
+=======
+        if len(fids) >= max_f:
+            status.set_text(f"already at max-fiducials ({max_f}) -- remove "
+                            f"one, or raise it in laser_setup.yaml")
+            fig.canvas.draw_idle()
+            return
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
         if pending["px"] is None:
             status.set_text("right-click a fiducial on the image first")
             fig.canvas.draw_idle()
@@ -1865,7 +2443,14 @@ def pick_fiducials(cfg: dict) -> None:
         pending["px"] = None
         bx.set_val("")
         by.set_val("")
+<<<<<<< HEAD
         status.set_text(f"added fiducial {len(fids) - 1}")
+=======
+        status.set_text(f"added fiducial {len(fids) - 1}"
+                        f"   ({len(fids)}/{max_f}"
+                        + (", 4+ enables leave-one-out)"
+                           if len(fids) < 4 else ")"))
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
         redraw()
 
     def remove(_ev=None):
@@ -1896,6 +2481,10 @@ def pick_fiducials(cfg: dict) -> None:
             Button(fig.add_axes([0.755, 0.06, 0.058, 0.045]), "Zoom +"),
             Button(fig.add_axes([0.818, 0.06, 0.058, 0.045]), "Zoom -"),
             Button(fig.add_axes([0.881, 0.06, 0.058, 0.045]), "Fit")]
+<<<<<<< HEAD
+=======
+    btn["add"] = keep[0]
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     keep[0].on_clicked(add)
     keep[1].on_clicked(remove)
     keep[2].on_clicked(reset)
@@ -1907,6 +2496,25 @@ def pick_fiducials(cfg: dict) -> None:
     bx.on_submit(lambda _t: by.set_val(by.text) or None)
     by.on_submit(lambda _t: add())
 
+<<<<<<< HEAD
+=======
+    if preloaded:
+        msg = (f"loaded {preloaded} existing fiducial(s) from "
+               f"{CONFIG_PATH.name} -- press Reset to start fresh")
+        if preloaded >= 3:
+            src = np.array([[f["x_px"], f["y_px"]] for f in fids], float)
+            dst = np.array([[f["x_um"], f["y_um"]] for f in fids], float)
+            T0 = fit_similarity(src, dst, cfg.get("allow-reflection", True))
+            r0 = residuals(T0, src, dst)
+            if registration_sanity(src, dst, r0, cfg):
+                msg = (f"loaded {preloaded} SUSPECT fiducial(s) from "
+                       f"{CONFIG_PATH.name} -- see the terminal; "
+                       f"press Reset to start fresh")
+            for note in registration_sanity(src, dst, r0, cfg):
+                print(f"WARNING: {note}")
+        status.set_text(msg)
+
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     redraw()
     plt.show()
 
@@ -1936,6 +2544,94 @@ def pick_fiducials(cfg: dict) -> None:
 # cursor.
 # =====================================================================
 
+<<<<<<< HEAD
+=======
+def attach_image_lod(ax, img, cfg=None, margin=0.15):
+    """
+    Show a full-slide scan without the window crawling.
+
+    matplotlib re-normalises and colour-maps the WHOLE array on every
+    draw and never clips it to the visible rectangle, so a 75 Mpx scan
+    costs a fixed ~200 ms per frame even when zoomed into one corner.
+    The default 'antialiased' interpolation adds ~550 ms more when the
+    whole slide is in view. Zoom and pan then run near one frame per
+    second, which is what makes picking feel broken.
+
+    So hand matplotlib only what is on screen: crop the full-res array
+    to the visible rectangle plus a margin, and decimate that crop to
+    at most display-max-megapixels. Zoomed out that is a cheap
+    overview; zoomed in the crop is small enough that the step falls to
+    1 and you are looking at true full resolution. Measured on a
+    10002x7551 scan: 760 ms -> 27 ms per redraw, flat across zoom.
+
+    Clicks stay exact at every level because set_extent keeps the
+    artist in ORIGINAL pixel coordinates -- ev.xdata is a scan pixel,
+    not a display pixel, so callers need no change.
+    """
+    max_px = float((cfg or {}).get("display-max-megapixels", 4.0)) * 1e6
+    h, w = img.shape[:2]
+    state = {"key": None, "busy": False}
+
+    def crop_for(xlim, ylim):
+        xa, xb = min(xlim), max(xlim)
+        ya, yb = min(ylim), max(ylim)
+        mx, my = (xb - xa) * margin, (yb - ya) * margin
+        x0 = int(max(0, math.floor(xa - mx)))
+        x1 = int(min(w, math.ceil(xb + mx)))
+        y0 = int(max(0, math.floor(ya - my)))
+        y1 = int(min(h, math.ceil(yb + my)))
+        if x1 <= x0:
+            x0, x1 = 0, w
+        if y1 <= y0:
+            y0, y1 = 0, h
+        n = (x1 - x0) * (y1 - y0)
+        step = max(1, int(math.ceil(math.sqrt(n / max_px))))
+        return x0, x1, y0, y1, step
+
+    def extent_for(x0, y0, step, sub):
+        # imshow centres cell j at left + (j + 0.5) * step, and the
+        # decimated cell j is original pixel x0 + j * step.
+        left = x0 - 0.5 * step
+        top = y0 - 0.5 * step
+        return (left, left + sub.shape[1] * step,
+                top + sub.shape[0] * step, top)
+
+    x0, x1, y0, y1, step = crop_for((0, w), (0, h))
+    sub = img[y0:y1:step, x0:x1:step]
+    im = ax.imshow(sub, cmap="gray", interpolation="nearest",
+                   origin="upper", extent=extent_for(x0, y0, step, sub))
+    state["key"] = (x0, x1, y0, y1, step)
+    ax.set_xlim(-0.5, w - 0.5)
+    ax.set_ylim(h - 0.5, -0.5)
+    ax.set_autoscale_on(False)
+
+    def update(*_a):
+        if state["busy"]:
+            return
+        key = crop_for(ax.get_xlim(), ax.get_ylim())
+        if key == state["key"]:
+            return
+        state["busy"] = True
+        try:
+            cx0, cx1, cy0, cy1, s = key
+            new = img[cy0:cy1:s, cx0:cx1:s]
+            xl, yl = ax.get_xlim(), ax.get_ylim()
+            im.set_data(new)
+            im.set_extent(extent_for(cx0, cy0, s, new))
+            # set_extent re-autoscales when autoscale is still on; the
+            # user's zoom must win, so put the limits back.
+            ax.set_xlim(*xl)
+            ax.set_ylim(*yl)
+            state["key"] = key
+        finally:
+            state["busy"] = False
+
+    ax.callbacks.connect("xlim_changed", update)
+    ax.callbacks.connect("ylim_changed", update)
+    return im
+
+
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 def attach_zoom(fig, ax, step: float = 1.3):
     """Wire scroll zoom, middle-drag pan and keyboard shortcuts.
 
@@ -2103,7 +2799,11 @@ def cli_convert(argv: list[str]) -> None:
             src = HERE / src
     else:
         src = HERE / load_config()["input"]["scan"]
+<<<<<<< HEAD
         say("No input given, using CONFIG input scan")
+=======
+        say("No input given, using input.scan from laser_setup.yaml")
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
     if not src.exists():
         sys.exit(f"Not found: {src}")
@@ -2160,6 +2860,7 @@ def save_manual(entries: list[tuple], path: Path = SELECTION_PATH) -> None:
             w.writerow([f"{x:.2f}", f"{y:.2f}", d])
 
 
+<<<<<<< HEAD
 def apply_manual(beads: list[Bead], cfg: dict,
                  path: Path = SELECTION_PATH) -> None:
     entries = load_manual(path)
@@ -2169,6 +2870,23 @@ def apply_manual(beads: list[Bead], cfg: dict,
     tol = float(cfg.get("manual-selection", {}).get("match-radius-px", 12))
     tree = cKDTree(np.array([[b.x_px, b.y_px] for b in beads], float))
 
+=======
+def apply_override_entries(beads: list[Bead], entries: list[tuple],
+                           cfg: dict) -> tuple[int, int]:
+    """
+    Apply (x_px, y_px, decision) overrides by POSITION, returning
+    (matched, unmatched).
+
+    Split out of apply_manual so the select window can re-apply the
+    overrides made in the current session after re-running detection.
+    Those live on the bead objects and are not on disk until the window
+    closes, so re-reading the CSV would silently lose them.
+    """
+    if not entries or not beads:
+        return 0, 0
+    tol = float(cfg.get("manual-selection", {}).get("match-radius-px", 12))
+    tree = cKDTree(np.array([[b.x_px, b.y_px] for b in beads], float))
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     hit = miss = 0
     for x, y, decision in entries:
         d, i = tree.query([x, y])
@@ -2181,6 +2899,20 @@ def apply_manual(beads: list[Bead], cfg: dict,
         b.manual = decision
         b.reject_reason = "" if b.accepted else "manually rejected"
         b.reject_category = "" if b.accepted else "manual"
+<<<<<<< HEAD
+=======
+    return hit, miss
+
+
+def apply_manual(beads: list[Bead], cfg: dict,
+                 path: Path = SELECTION_PATH) -> None:
+    entries = load_manual(path)
+    if not entries or not beads:
+        log("no manual overrides to apply")
+        return
+    tol = float(cfg.get("manual-selection", {}).get("match-radius-px", 12))
+    hit, miss = apply_override_entries(beads, entries, cfg)
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     say(f"  manual overrides applied            : {hit}"
         + (f"  ({miss} matched nothing within {tol:.0f} px)" if miss else ""))
 
@@ -2195,6 +2927,7 @@ def bead_manual_selection(cfg: dict) -> None:
       drag a box            select a region
       Accept box            accept every bead inside
       Reject box            reject every bead inside
+<<<<<<< HEAD
       Clear box             drop the region selection
       Reset                 discard all manual overrides
       close the window      write manual_selection.csv
@@ -2202,6 +2935,30 @@ def bead_manual_selection(cfg: dict) -> None:
     import matplotlib.pyplot as plt
     from matplotlib.widgets import (RectangleSelector, Button,
                                     CheckButtons)
+=======
+      Detect in box         run detection over just that rectangle and
+                            merge whatever it finds into the list
+      Clear box             drop the region selection
+      Reset                 discard all manual overrides
+      close the window      write manual_selection.csv
+
+    'Detect in box' exists because detection only ever looks inside
+    detection.roi, so a bead deposit outside it is not missed by the
+    filters -- it is never examined at all, and shows as a blank patch
+    here. Rather than guess a wider ROI up front, draw a box round the
+    blank patch and detect into it.
+
+    Two consequences are handled rather than hidden. Every filter is
+    re-run over the UNION of old and new objects, because isolation is
+    a property of the whole list: appending to an already-filtered list
+    would leave the new objects invisible to their neighbours'
+    isolation test. And on close the ROI in laser_setup.yaml is widened
+    to cover the boxes, because otherwise 'run' would detect only the
+    original region and silently drop every override made outside it.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.widgets import RectangleSelector, Button
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     from matplotlib.patches import Circle
 
     backend = plt.get_backend()
@@ -2211,9 +2968,16 @@ def bead_manual_selection(cfg: dict) -> None:
                  f"Install a GUI toolkit (pip install pyqt5) or set "
                  f"MPLBACKEND=TkAgg and try again.")
 
+<<<<<<< HEAD
     T = to_microns(transform_from_config(cfg), cfg)
     beads, scan = build_beads(cfg, T)
     auto = [b.accepted for b in beads]
+=======
+    T = transform_from_config(cfg)
+    beads, scan = build_beads(cfg, T)
+    auto = [b.accepted for b in beads]
+    extra = []          # boxes fed to 'Detect in box', in scan pixels
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
     img = None
     if scan:
@@ -2223,11 +2987,16 @@ def bead_manual_selection(cfg: dict) -> None:
     fig = plt.figure(figsize=(15, 10))
     ax = fig.add_axes([0.04, 0.12, 0.93, 0.83])
     if img is not None:
+<<<<<<< HEAD
         ax.imshow(img, cmap="gray")
+=======
+        attach_image_lod(ax, img, cfg)
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     ax.set_aspect("equal")
 
     box = {"rect": None}
 
+<<<<<<< HEAD
     # Which categories are drawn. Hiding a category only affects the
     # display -- a hidden bead keeps its accept/reject state, still
     # counts as an isolation neighbour, and is still exported.
@@ -2240,6 +3009,8 @@ def bead_manual_selection(cfg: dict) -> None:
             return "clumped"
         return "rejected"
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     def colour(b):
         if b.accepted:
             return "#2ca02c"
@@ -2260,6 +3031,7 @@ def bead_manual_selection(cfg: dict) -> None:
         for b, c in zip(beads, patches):
             c.set_edgecolor(colour(b))
             c.set_linewidth(2.0 if b.manual else 1.3)
+<<<<<<< HEAD
             c.set_visible(show[category(b)])
         hidden = [k for k, v in show.items() if not v]
         note = f"   |   HIDDEN: {', '.join(hidden)}" if hidden else ""
@@ -2272,12 +3044,24 @@ def bead_manual_selection(cfg: dict) -> None:
     def in_box():
         # Only VISIBLE beads. Acting on a hidden category would toggle
         # things the operator cannot see and did not mean to touch.
+=======
+        ax.set_title(f"Bead manual selection   |   accepted "
+                     f"{sum(b.accepted for b in beads)} / {len(beads)}   |   "
+                     f"manual overrides {sum(1 for b in beads if b.manual)}")
+        fig.canvas.draw_idle()
+
+    def in_box():
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
         if not box["rect"]:
             return []
         x0, x1, y0, y1 = box["rect"]
         return [i for i, b in enumerate(beads)
+<<<<<<< HEAD
                 if x0 <= b.x_px <= x1 and y0 <= b.y_px <= y1
                 and show[category(b)]]
+=======
+                if x0 <= b.x_px <= x1 and y0 <= b.y_px <= y1]
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
     def on_box(eclick, erelease):
         x0, x1 = sorted((eclick.xdata, erelease.xdata))
@@ -2310,11 +3094,17 @@ def bead_manual_selection(cfg: dict) -> None:
     def on_click(ev):
         if ev.inaxes is not ax or ev.button != 3 or ev.xdata is None:
             return
+<<<<<<< HEAD
         # Hidden beads are not clickable, for the same reason.
         d = [math.hypot(b.x_px - ev.xdata, b.y_px - ev.ydata)
              if show[category(b)] else float("inf") for b in beads]
         i = int(np.argmin(d))
         if not math.isfinite(d[i]) or d[i] > 40:
+=======
+        d = [math.hypot(b.x_px - ev.xdata, b.y_px - ev.ydata) for b in beads]
+        i = int(np.argmin(d))
+        if d[i] > 40:
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
             return
         b = beads[i]
         b.accepted = not b.accepted
@@ -2345,6 +3135,7 @@ def bead_manual_selection(cfg: dict) -> None:
         status.set_text("manual overrides reset")
         refresh()
 
+<<<<<<< HEAD
     zin, zout, zfit = attach_zoom(fig, ax)
 
     keep = []
@@ -2357,10 +3148,94 @@ def bead_manual_selection(cfg: dict) -> None:
                           (0.53, 0.07, "Zoom +", zin),
                           (0.61, 0.07, "Zoom -", zout),
                           (0.69, 0.07, "Fit", zfit)):
+=======
+    def detect_in_box():
+        if img is None or scan is None:
+            status.set_text("no scan image loaded, so there is nothing "
+                            "to detect in")
+            fig.canvas.draw_idle()
+            return
+        if not box["rect"]:
+            status.set_text("draw a box first, then Detect in box")
+            fig.canvas.draw_idle()
+            return
+        h, w = img.shape[:2]
+        bx0, bx1, by0, by1 = box["rect"]
+        x0, x1 = max(0, int(bx0)), min(w, int(math.ceil(bx1)))
+        y0, y1 = max(0, int(by0)), min(h, int(math.ceil(by1)))
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            status.set_text("that box is too small to detect in")
+            fig.canvas.draw_idle()
+            return
+
+        status.set_text(f"detecting in {x1 - x0}x{y1 - y0} px box ...")
+        fig.canvas.draw_idle()
+        fig.canvas.flush_events()
+
+        sub = {**cfg, "detection": {**cfg["detection"],
+                                    "roi": {"x0": x0, "y0": y0,
+                                            "x1": x1, "y1": y1}}}
+        found = detect_blobs(scan, sub)
+
+        # The box usually overlaps ground already covered. A duplicate
+        # would not just double-count, it would sit on top of its own
+        # twin and make that bead fail isolation against itself.
+        dup = float(cfg.get("manual-selection", {})
+                    .get("redetect-duplicate-px", 10))
+        if beads and found:
+            tree = cKDTree(np.array([[b.x_px, b.y_px] for b in beads], float))
+            found = [b for b in found
+                     if tree.query([b.x_px, b.y_px])[0] > dup]
+        if not found:
+            status.set_text("no new objects in that box "
+                            "(everything there was already detected)")
+            fig.canvas.draw_idle()
+            return
+
+        # Overrides made this session are on the objects, not on disk.
+        session = [(b.x_px, b.y_px, b.manual) for b in beads if b.manual]
+
+        beads.extend(found)
+        for b in found:
+            c = Circle((b.x_px, b.y_px), max(b.diameter_px / 2, 4),
+                       fill=False, ec=colour(b), lw=1.3)
+            ax.add_patch(c)
+            patches.append(c)
+
+        # Re-run everything over the union, in the documented order.
+        to_stage(beads, T)
+        isolation_filter(beads, float(cfg["min-bead-separation"]))
+        shape_filter(beads, cfg)
+        auto[:] = [b.accepted for b in beads]     # new Reset baseline
+        hit, miss = apply_override_entries(beads, session, cfg)
+
+        extra.append((x0, y0, x1, y1))
+        note = f"detected {len(found)} new objects; re-filtered all {len(beads)}"
+        if miss:
+            note += f"  ({miss} override(s) lost)"
+        status.set_text(note)
+        say(note)
+        refresh()
+
+    zin, zout, zfit = attach_zoom(fig, ax)
+
+    keep = []
+    for x, w, lbl, fn in ((0.040, 0.105, "Accept box",
+                           lambda: set_many("accept")),
+                          (0.150, 0.105, "Reject box",
+                           lambda: set_many("reject")),
+                          (0.260, 0.090, "Clear box", clear_box),
+                          (0.355, 0.120, "Detect in box", detect_in_box),
+                          (0.480, 0.070, "Reset", reset_all),
+                          (0.560, 0.060, "Zoom +", zin),
+                          (0.625, 0.060, "Zoom -", zout),
+                          (0.690, 0.055, "Fit", zfit)):
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
         btn = Button(fig.add_axes([x, 0.045, w, 0.045]), lbl)
         btn.on_clicked(lambda _ev, f=fn: f())
         keep.append(btn)
 
+<<<<<<< HEAD
     # Show/hide by category. On a crowded slide the red and purple
     # circles bury the green ones -- 549 of 1003 objects were clumps
     # on the reference scan -- so hiding them is the only way to see
@@ -2389,6 +3264,30 @@ def bead_manual_selection(cfg: dict) -> None:
     refresh()
     plt.show()
 
+=======
+    refresh()
+    plt.show()
+
+    if extra:
+        roi = cfg["detection"].get("roi") or {}
+        xs = [roi.get("x0", 0)] + [e[0] for e in extra]
+        ys = [roi.get("y0", 0)] + [e[1] for e in extra]
+        xe = [roi.get("x1", 0)] + [e[2] for e in extra]
+        ye = [roi.get("y1", 0)] + [e[3] for e in extra]
+        nx0, ny0, nx1, ny1 = min(xs), min(ys), max(xe), max(ye)
+        say(f"\nDetected in {len(extra)} extra box(es). 'run' only looks "
+            f"inside detection.roi, so it is widened to cover them:")
+        say(f"  roi: x0 {roi.get('x0')} -> {nx0}   y0 {roi.get('y0')} "
+            f"-> {ny0}   x1 {roi.get('x1')} -> {nx1}   y1 "
+            f"{roi.get('y1')} -> {ny1}")
+        if save_roi(nx0, ny0, nx1, ny1):
+            say(f"  written to {CONFIG_PATH.name}")
+        else:
+            say(f"  COULD NOT write it -- set detection.roi in "
+                f"{CONFIG_PATH.name} by hand to the values above, or "
+                f"'run' will discard the beads you picked out there.")
+
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     entries = [(b.x_px, b.y_px, b.manual) for b in beads if b.manual]
     save_manual(entries)
     say(f"\nWrote {SELECTION_PATH.name} with {len(entries)} overrides")
@@ -2432,7 +3331,11 @@ def build_beads(cfg: dict, T: Transform) -> tuple[list[Bead], Path | None]:
 
 def run(cfg: dict) -> None:
     log("fitting registration from fiducials")
+<<<<<<< HEAD
     T = to_microns(report_registration(cfg), cfg)
+=======
+    T = report_registration(cfg)
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     print()
     beads, scan = build_beads(cfg, T)
 
@@ -2450,6 +3353,7 @@ def run(cfg: dict) -> None:
                       f"inherits that bias directly. Check the overlay, "
                       f"or use\n  distance-reference: center.")
 
+<<<<<<< HEAD
     # Comi et al. 2017: probe radius >= target localization error, and
     # distance filter > that error + probe radius.
     tle = float(cfg.get("target-localization-error-um", 0) or 0)
@@ -2471,6 +3375,8 @@ def run(cfg: dict) -> None:
             print(f"  min-bead-separation {sep:.0f} um exceeds "
                   f"{need:.0f} um: OK")
 
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     n_clump = sum(b.clumped for b in beads)
     n_iso = sum(1 for b in beads
                 if b.nn_um >= float(cfg["min-bead-separation"]))
@@ -2489,13 +3395,18 @@ def run(cfg: dict) -> None:
 
     log(f"placing {len(cfg['laser-shot-angles'])} shots per accepted bead, "
         f"crater {footprint_um(cfg):.0f} um")
+<<<<<<< HEAD
     shots = place_shots(beads, cfg, T)
+=======
+    shots = place_shots(beads, cfg)
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     log(f"{len(shots)} shot positions generated")
     ordered = serpentine(beads, shots) if cfg["output"].get(
         "serpentine-order", True) else [s for s in shots if not s.dropped]
 
     sp = cfg["shot-placement"]
     ref = sp["distance-reference"]
+<<<<<<< HEAD
 
     if ref == "edge":
         suspect = [b for b in beads if b.accepted and suspect_radius(b, cfg)]
@@ -2516,6 +3427,8 @@ def run(cfg: dict) -> None:
             print(f"  Cross-check by running once with "
                   f"distance-reference: center -- shots\n  dropped there for "
                   f"'crater overlaps own bead' are these same beads.")
+=======
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     detail = (f"measured radius + {sp['edge-offset']} um"
               if ref == "edge" else f"{sp['laser-distance']} um from centre")
     print(f"\nShot placement : {ref} ({detail})")
@@ -2526,7 +3439,13 @@ def run(cfg: dict) -> None:
         print(f"      {n:5d}  {reason}")
     print(f"  written : {len(ordered)}")
 
+<<<<<<< HEAD
     prefix = HERE / cfg["output"]["prefix"]
+=======
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    outdir = new_output_dir("run", cfg, stamp)
+    prefix = outdir / cfg["output"]["prefix"]
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     log(f"writing outputs with prefix {prefix}")
     csv_path = prefix.with_suffix(".csv")
     write_csv(csv_path, beads, ordered)
@@ -2545,6 +3464,7 @@ def run(cfg: dict) -> None:
         if draw_zoom(zp, beads, cfg, T, scan):
             print(f"Wrote {zp.name}")
 
+<<<<<<< HEAD
     if cfg["output"].get("write-flex-txt", True) and ordered:
         fp = prefix.with_name(prefix.name + "_flexImaging.txt")
         write_flex_txt(fp, ordered, cfg, T)
@@ -2566,6 +3486,25 @@ def run(cfg: dict) -> None:
                                names[s0:s0 + XEO_MAX_POSITIONS], cfg)
                 print(f"Wrote {rp.name}  ({len(read_run(rp))} positions)"
                       f"  geometry={rp.stem}")
+=======
+    rel = outdir.relative_to(HERE) if outdir.is_relative_to(HERE) else outdir
+    print(f"  all of it under {rel}/")
+
+    if cfg["output"].get("write-xeo", False):
+        M = fit_mtp(cfg)
+        if M is None:
+            print("\nSKIPPED .xeo: mtp_calibration has fewer than 3 entries.\n"
+                  "  UnitCoord_X/Y are plate fractions, not microns. Measure\n"
+                  "  three named MTP positions on the instrument and pair\n"
+                  "  each with its UnitCoord from a real flexImaging export.\n"
+                  "  No default is defensible, so nothing is written.")
+        else:
+            files = write_xeo(prefix, ordered, beads, M)
+            for f in files:
+                print(f"Wrote {f.name}  ({len(read_xeo(f))} positions)")
+            print("\nDiff one of these against a genuine flexImaging export "
+                  "before acquiring. The PlateTypeName is UNVERIFIED.")
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
 
 
@@ -2589,7 +3528,11 @@ def doctor() -> None:
     say(f"writable      {os.access(HERE, os.W_OK)}")
 
     say("\n--- packages ---")
+<<<<<<< HEAD
     need = {"numpy": "numpy", "scipy": "scipy",
+=======
+    need = {"numpy": "numpy", "yaml": "PyYAML", "scipy": "scipy",
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
             "cv2": "opencv-python", "matplotlib": "matplotlib"}
     for mod, pkg in need.items():
         try:
@@ -2612,6 +3555,7 @@ def doctor() -> None:
         pass
 
     say("\n--- config ---")
+<<<<<<< HEAD
     try:
         cfg = load_config()
     except SystemExit as e:
@@ -2625,6 +3569,18 @@ def doctor() -> None:
            else f"   (measured radius + {sp['edge-offset']} um)"))
     roi = cfg["detection"].get("roi")
     say(f"detection roi     {roi if roi else 'whole image'}")
+=======
+    if not CONFIG_PATH.exists():
+        say(f"laser_setup.yaml  MISSING at {CONFIG_PATH}")
+        say("\nSTOP: nothing else can be checked.")
+        return
+    try:
+        cfg = load_config()
+    except SystemExit as e:
+        say(f"laser_setup.yaml  INVALID: {e}")
+        return
+    say(f"laser_setup.yaml  OK")
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 
     nf = len(cfg.get("fiducials") or [])
     say(f"fiducials         {nf}"
@@ -2768,6 +3724,7 @@ def selftest() -> None:
     print("6. shots")
     shots = place_shots(beads, cfg)
     live = serpentine(beads, shots)
+<<<<<<< HEAD
     expected = sum(len(circular_pack(b.diameter_um / 2, cfg)) for b in acc)
     assert len(shots) == expected, (len(shots), expected)
     print(f"   {len(shots)} placed, {len(live)} survive validation")
@@ -2786,6 +3743,23 @@ def selftest() -> None:
             for i in range(950)]
     tmp = HERE / "_selftest"
     files = write_xeo(tmp, fake, beads, cfg, M)
+=======
+    assert len(shots) == 4 * len(acc)
+    print(f"   {len(shots)} placed, {len(live)} survive validation")
+
+    print("7. .xeo split and round-trip")
+    cfg["mtp_calibration"] = [
+        {"name": "A1", "x_um": 0, "y_um": 0, "unit_x": 0.0, "unit_y": 0.0},
+        {"name": "X1", "x_um": 75000, "y_um": 0, "unit_x": 1.0, "unit_y": 0.0},
+        {"name": "A9", "x_um": 0, "y_um": 25000, "unit_x": 0.0,
+         "unit_y": 0.3333},
+    ]
+    M = fit_mtp(cfg)
+    assert M is not None
+    fake = [Shot(0, 0, 100.0 * i, 200.0) for i in range(950)]
+    tmp = HERE / "_selftest"
+    files = write_xeo(tmp, fake, beads, M)
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     counts = [len(read_xeo(f)) for f in files]
     assert counts == [400, 400, 150], counts
     print(f"   950 positions -> {len(files)} files {counts} via lines[13:-12]")
@@ -2802,6 +3776,60 @@ def selftest() -> None:
 
 # =====================================================================
 
+<<<<<<< HEAD
+=======
+def review(cfg: dict) -> None:
+    """
+    Render the shot pattern for every accepted bead so the operator can
+    eyeball it before an acquisition. Runs the same detect-filter-place
+    path as 'run' -- including any manual_selection.csv overrides -- but
+    writes only pictures, never a target list.
+    """
+    T = report_registration(cfg)
+    print()
+    beads, scan = build_beads(cfg, T)
+    place_shots(beads, cfg)
+
+    acc = [b for b in beads if b.accepted]
+    n_manual = sum(1 for b in acc if b.manual)
+    print(f"\nAccepted beads : {len(acc)}"
+          + (f"   ({n_manual} set by hand in 'select')" if n_manual else ""))
+    if not acc:
+        print("Nothing to confirm. Run 'select' and mark some beads green, "
+              "or loosen the filters.")
+        return
+    if scan is None or not scan.exists():
+        print("No scan image available, so no confirmation sheet was "
+              "written. Set input.scan in laser_setup.yaml.")
+        return
+
+    kept = sum(1 for b in acc for s in b.shots if not s.dropped)
+    total = sum(len(b.shots) for b in acc)
+    print(f"Shots          : {kept} of {total} will fire "
+          f"({total - kept} dropped)")
+
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    outdir = new_output_dir("review", cfg, stamp)
+
+    log("rendering whole-slide overview")
+    over = outdir / "slide_overview.png"
+    have_over = draw_review_overview(over, beads, cfg, scan, stamp)
+
+    log("rendering per-bead confirmation sheets")
+    pages = draw_shot_review(beads, cfg, T, scan, stamp, outdir)
+    if not pages and not have_over:
+        print("Could not render anything (is opencv-python installed?).")
+        return
+
+    rel = outdir.relative_to(HERE) if outdir.is_relative_to(HERE) else outdir
+    print(f"\nWrote {rel}/")
+    if have_over:
+        print(f"  {over.name}   whole slide, targeted vs not")
+    for p in pages:
+        print(f"  {p.name}")
+
+
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
 def main() -> None:
     global VERBOSE
     VERBOSE = bool({"-v", "--verbose"} & set(sys.argv))
@@ -2820,6 +3848,11 @@ def main() -> None:
         bead_manual_selection(load_config())
     elif cmd == "check":
         report_registration(load_config())
+<<<<<<< HEAD
+=======
+    elif cmd == "review":
+        review(load_config())
+>>>>>>> cb595a2987d1ea5efa53eee4d313a9cc4ef9826a
     elif cmd == "run":
         run(load_config())
     elif cmd == "selftest":
