@@ -95,6 +95,22 @@ one firing marks the object.
 A clump is **marked, not deleted**, so a nearby single bead still fails isolation
 against it.
 
+### Shot placement reference
+
+microMS's circular packing places targets at `radius + offset`, scaling with the
+measured blob. This does the same by default (`distance-reference: edge`).
+
+Added here: because that scaling derives shot distance from the measured radius,
+the crater-overlap check compares that radius against itself and can never fail.
+A mis-measured bead is therefore placed wrongly and silently. `suspect_radius`
+counts accepted beads whose diameter differs from `bead-diameter` by more than
+`suspect-diameter-tolerance`, which must be tighter than
+`bead-diameter-tolerance` or nothing can be both accepted and suspect.
+
+`distance-reference: center` is the alternative: a fixed distance regardless of
+measured size. It has the opposite failure mode — a mis-measured bead fails the
+clearance check loudly instead of being placed quietly.
+
 ### Path ordering
 
 microMS uses a TSP approximation bounded to three minutes. This uses serpentine

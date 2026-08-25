@@ -713,3 +713,46 @@ def test_dynamic_can_be_switched_off(cfg, transform):
     M.shape_filter(beads, cfg)
     shots = M.place_shots(beads, cfg)
     assert len(shots) == len(cfg["laser-shot-angles"])
+
+
+# ---------------------------------------------------------------------
+# edge placement and the suspect-radius flag
+# ---------------------------------------------------------------------
+
+def test_suspect_band_is_tighter_than_accept_band():
+    """If it were wider, no bead could be both accepted and suspect and
+    the check would be unreachable -- which it was when first written."""
+    assert (M.CONFIG["suspect-diameter-tolerance"]
+            < M.CONFIG["bead-diameter-tolerance"])
+
+
+def test_bad_tolerance_relationship_is_rejected():
+    import copy
+    saved = copy.deepcopy(M.CONFIG)
+    try:
+        M.CONFIG["suspect-diameter-tolerance"] = 0.9
+        with pytest.raises(SystemExit):
+            M.load_config()
+    finally:
+        M.CONFIG.clear()
+        M.CONFIG.update(saved)
+
+
+def test_suspect_radius_flags_a_mismeasured_bead(cfg):
+    nominal = float(cfg["bead-diameter"])
+    assert not M.suspect_radius(M.Bead(0, 0, 0, diameter_um=nominal), cfg)
+    assert M.suspect_radius(M.Bead(0, 0, 0, diameter_um=nominal * 1.35), cfg)
+    assert M.suspect_radius(M.Bead(0, 0, 0, diameter_um=nominal * 0.65), cfg)
+
+
+def test_edge_placement_scales_with_measured_radius(cfg):
+    cfg["shot-placement"]["distance-reference"] = "edge"
+    off = cfg["shot-placement"]["edge-offset"]
+    small = M.Bead(0, 0, 0, diameter_um=60.0)
+    large = M.Bead(0, 0, 0, diameter_um=100.0)
+    assert M.shot_radius(small, cfg) == pytest.approx(30 + off)
+    assert M.shot_radius(large, cfg) == pytest.approx(50 + off)
+
+
+def test_edge_is_the_default():
+    assert M.CONFIG["shot-placement"]["distance-reference"] == "edge"

@@ -146,6 +146,15 @@ CONFIG = {
     "bead-diameter": 90,
     "bead-diameter-tolerance": 0.35,
 
+    # "edge" placement scales shot distance with the MEASURED radius,
+    # so a mis-measured bead is placed wrongly and silently.
+    #
+    # MUST be tighter than bead-diameter-tolerance, or nothing can be
+    # both accepted and suspect and the check is unreachable. A bead at
+    # the edge of the accepted band -- 122 um measured on a 90 um bead
+    # -- still gets its shots 16 um too far out.
+    "suspect-diameter-tolerance": 0.20,
+
     # Isolation filter, centre to centre, run against EVERY detected
     # object including debris. A bead beside a speck of dust is not
     # isolated, and shape-filtering first would delete the dust and let
@@ -186,7 +195,7 @@ CONFIG = {
         #
         # Measured diameter is threshold-dependent and not yet reliable
         # on these slides, so "center" ignores it entirely.
-        "distance-reference": "center",
+        "distance-reference": "edge",
         "edge-offset": 15,
         "laser-distance": 60,
         # "edge" only: clamp so one bad measurement cannot fling shots
@@ -388,6 +397,13 @@ def load_config(path=None) -> dict:
 
     if not cfg["laser-shot-angles"]:
         sys.exit("laser-shot-angles is empty; nothing to fire.")
+
+    sus = float(cfg.get("suspect-diameter-tolerance", 0.2))
+    acc = float(cfg.get("bead-diameter-tolerance", 0.35))
+    if sus >= acc:
+        sys.exit(f"suspect-diameter-tolerance ({sus}) must be smaller than "
+                 f"bead-diameter-tolerance ({acc}); otherwise no accepted "
+                 f"bead can ever be flagged and the check is unreachable.")
 
     fu = cfg.get("fiducial-units", "stage")
     if fu not in ("stage", "plate"):
@@ -950,6 +966,27 @@ def shape_filter(beads: list[Bead], cfg: dict) -> None:
 # =====================================================================
 # SHOT PLACEMENT
 # =====================================================================
+
+def suspect_radius(bead: "Bead", cfg: dict) -> bool:
+    """
+    True when this bead's measured diameter is far enough from nominal
+    that scaling its shot distance is not trustworthy.
+
+    In "edge" mode shot distance is derived from the measured radius,
+    so the clearance check compares that radius against itself and can
+    never fail. A wrongly measured bead therefore produces a clean run
+    with shots placed at the wrong distance -- 165 um measured on a
+    90 um bead puts them 40 um out into plain matrix, off the halo,
+    with nothing to show for it.
+
+    "center" mode has the opposite behaviour: the same bead fails the
+    crater-overlap check loudly. This flag restores that signal
+    without giving up the scaling.
+    """
+    tol = float(cfg.get("suspect-diameter-tolerance", 0.4))
+    nominal = float(cfg["bead-diameter"])
+    return abs(bead.diameter_um - nominal) > tol * nominal
+
 
 @dataclass
 class Shot:
@@ -2459,6 +2496,26 @@ def run(cfg: dict) -> None:
 
     sp = cfg["shot-placement"]
     ref = sp["distance-reference"]
+
+    if ref == "edge":
+        suspect = [b for b in beads if b.accepted and suspect_radius(b, cfg)]
+        if suspect:
+            tol = float(cfg.get("suspect-diameter-tolerance", 0.4))
+            nominal = float(cfg["bead-diameter"])
+            print(f"\nWARNING: {len(suspect)} of "
+                  f"{sum(b.accepted for b in beads)} accepted beads differ "
+                  f"from bead-diameter\n  ({nominal:.0f} um) by more than "
+                  f"{tol * 100:.0f}%. 'edge' placement scales shot distance "
+                  f"from the\n  measured radius, so those shots are placed "
+                  f"on a radius that may be wrong --\n  and the "
+                  f"crater-overlap check cannot catch it, because it compares "
+                  f"that\n  radius against itself.")
+            d = np.array([b.diameter_um for b in suspect])
+            print(f"  their diameters: {d.min():.0f} to {d.max():.0f} um "
+                  f"(median {np.median(d):.0f})")
+            print(f"  Cross-check by running once with "
+                  f"distance-reference: center -- shots\n  dropped there for "
+                  f"'crater overlaps own bead' are these same beads.")
     detail = (f"measured radius + {sp['edge-offset']} um"
               if ref == "edge" else f"{sp['laser-distance']} um from centre")
     print(f"\nShot placement : {ref} ({detail})")
