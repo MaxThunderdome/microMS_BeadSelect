@@ -756,3 +756,78 @@ def test_edge_placement_scales_with_measured_radius(cfg):
 
 def test_edge_is_the_default():
     assert M.CONFIG["shot-placement"]["distance-reference"] == "edge"
+
+
+# ---------------------------------------------------------------------
+# image pyramid
+# ---------------------------------------------------------------------
+
+def _scan(w=4000, h=3000):
+    return np.random.default_rng(0).integers(0, 255, (h, w), dtype=np.uint8)
+
+
+def test_pyramid_halves_each_level():
+    pyr = M.build_pyramid(_scan())
+    assert len(pyr) > 1
+    for a, b in zip(pyr, pyr[1:]):
+        assert b.shape[1] == a.shape[1] // 2
+
+
+def test_pyramid_stops_before_going_tiny():
+    pyr = M.build_pyramid(_scan(1024, 1024), levels=10, min_side=512)
+    assert min(pyr[-1].shape) >= 512
+
+
+def test_extent_is_always_full_resolution():
+    """Coordinates must not shift when the drawn level changes."""
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    img = _scan()
+    h, w = img.shape
+    fig, ax = plt.subplots()
+    im = M.show_pyramid(fig, ax, img, cmap="gray")
+    fig.canvas.draw()
+    assert tuple(im.get_extent()) == (-0.5, w - 0.5, h - 0.5, -0.5)
+
+    seen = set()
+    for f in (1.0, 0.5, 0.1):
+        pass
+    for f in (1.0, 0.5, 0.1):
+        ax.set_xlim(w / 2 - w * f / 2, w / 2 + w * f / 2)
+        ax.set_ylim(h / 2 + h * f / 2, h / 2 - h * f / 2)
+        fig.canvas.draw()
+        seen.add(im.get_array().shape[1])
+        assert im.get_array().shape[1] <= w
+        # a fixed pixel stays at the same data coordinate
+        d = ax.transData.transform([[1234, 567]])
+        back = ax.transData.inverted().transform(d)[0]
+        assert back[0] == pytest.approx(1234, abs=0.01)
+        assert back[1] == pytest.approx(567, abs=0.01)
+
+    assert len(seen) > 1, "zooming never changed the drawn level"
+    plt.close(fig)
+
+
+def test_zoom_crops_instead_of_drawing_everything():
+    """matplotlib processes the whole array and clips, so choosing a
+    pyramid level is not enough -- the visible rectangle has to be
+    cropped out or a deep zoom is as slow as the full view."""
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    img = _scan()
+    h, w = img.shape
+    fig, ax = plt.subplots()
+    im = M.show_pyramid(fig, ax, img, cmap="gray")
+    ax.set_xlim(2000, 2100)
+    ax.set_ylim(1550, 1450)
+    fig.canvas.draw()
+    arr = im.get_array()
+    assert arr.shape[1] < w / 4          # cropped, not the whole scan
+    d = ax.transData.transform([[2050, 1500]])
+    back = ax.transData.inverted().transform(d)[0]
+    assert back[0] == pytest.approx(2050, abs=0.01)
+    plt.close(fig)

@@ -111,6 +111,22 @@ counts accepted beads whose diameter differs from `bead-diameter` by more than
 measured size. It has the opposite failure mode — a mis-measured bead fails the
 clearance check loudly instead of being placed quietly.
 
+### Image display
+
+microMS decimates plain TIFFs to keep large scans workable. This does the same
+thing more aggressively: `show_pyramid` keeps the scan at several resolutions
+and, on every zoom, crops the visible rectangle out of the level that matches
+the screen.
+
+Choosing a level alone is not enough — matplotlib processes the whole array on
+every draw and clips what falls outside the axes, so a deep zoom costs the same
+as the full view. Cropping is what makes it fast. On the 8000x6039 reference
+scan this took eight zoom steps from 26.9 s to 6.3 s, and a single deep-zoom
+redraw to 0.14 s.
+
+`extent` always tracks the crop in full-resolution coordinates, so clicks,
+fiducials and bead positions are unaffected by which level is showing.
+
 ### Path ordering
 
 microMS uses a TSP approximation bounded to three minutes. This uses serpentine

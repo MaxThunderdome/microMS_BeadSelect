@@ -126,6 +126,11 @@ Opens the scan. Coordinate entry is **in the window**, not the terminal.
 
 Enter in the stage y box also commits, so entry can be keyboard-only.
 
+Large scans stay responsive: the image is held at several resolutions and only
+the visible region is drawn, at a detail level matched to the screen. Zoom in
+and it sharpens to full resolution automatically. Clicking precision is
+unaffected — coordinates are always full-resolution.
+
 Both interactive windows zoom the same way:
 
 | action | effect |

@@ -111,12 +111,10 @@ def banner(cmd: str) -> None:
 # Do not reuse these across sessions once the slide has been remounted:
 # repositioning shows up as a systematic error at every target.
 FIDUCIALS = [
-    # Corners of the two-slide array; stage microns measured on the fleX.
-    # Pixel positions are yours to click in `pick`.
-    # {"x_px": ?, "y_px": ?, "x_um": 18601.5, "y_um": -20310.8},  top left
-    # {"x_px": ?, "y_px": ?, "x_um": 86083.1, "y_um": -20161.0},  top right
-    # {"x_px": ?, "y_px": ?, "x_um": 18646.7, "y_um": -69830.8},  bottom left
-    # {"x_px": ?, "y_px": ?, "x_um": 86124.7, "y_um": -69700.2},  bottom right
+    {"x_px": 263.05, "y_px": 252.85, "x_um": 18601.50, "y_um": -20310.80},
+    {"x_px": 9655.71, "y_px": 268.03, "x_um": 86083.10, "y_um": -20161.00},
+    {"x_px": 249.13, "y_px": 7362.01, "x_um": 18646.70, "y_um": -69830.80},
+    {"x_px": 9628.05, "y_px": 7371.59, "x_um": 86124.70, "y_um": -69700.20},
 ]
 
 
@@ -1802,7 +1800,7 @@ def pick_fiducials(cfg: dict) -> None:
 
     fig = plt.figure(figsize=(14, 10))
     ax = fig.add_axes([0.05, 0.16, 0.92, 0.79])
-    ax.imshow(img, cmap="gray")
+    show_pyramid(fig, ax, img, cmap="gray")
 
     def redraw():
         for art in list(ax.lines) + list(ax.texts):
@@ -1918,6 +1916,116 @@ def pick_fiducials(cfg: dict) -> None:
         print("Fewer than 3 fiducials -- registration cannot be fitted yet.")
 
 
+
+
+
+# =====================================================================
+# IMAGE PYRAMID
+#
+# A whole-slide scan is 8000 x 6039 -- 48 million pixels. matplotlib
+# redraws the entire array on every zoom and pan, which is why the
+# picker crawls.
+#
+# The fix is what every slide viewer does: keep the image at several
+# resolutions and draw the coarsest one that still has more pixels
+# than the screen area it fills. Zoomed out you are looking at a
+# 1/8-scale copy; zoomed in you get full detail over a small region.
+#
+# The displayed array changes, the COORDINATES DO NOT. `extent` is
+# always the full-resolution frame, so clicks, fiducials and bead
+# positions are unaffected by which level happens to be showing.
+#
+# microMS decimates plain TIFFs for the same reason.
+# =====================================================================
+
+def build_pyramid(img, levels: int = 4, min_side: int = 512):
+    """[full, half, quarter, ...] while the result stays usable."""
+    import cv2
+    out = [img]
+    for _ in range(levels - 1):
+        h, w = out[-1].shape[:2]
+        if min(h, w) // 2 < min_side:
+            break
+        out.append(cv2.resize(out[-1], (w // 2, h // 2),
+                              interpolation=cv2.INTER_AREA))
+    return out
+
+
+def show_pyramid(fig, ax, img, **imshow_kw):
+    """
+    imshow that redraws only the visible region, at a resolution
+    matched to the screen.
+
+    Choosing a pyramid level alone is not enough: matplotlib processes
+    the entire array on every draw and simply clips what falls outside
+    the axes, so zooming into a corner of an 8000 px scan is no faster
+    than viewing all of it. The visible rectangle has to be CROPPED
+    out before it is handed over.
+
+    Level and crop together keep the drawn array near the size of the
+    axes in screen pixels, whatever the zoom.
+
+    `extent` tracks the crop in FULL-RESOLUTION coordinates, so clicks,
+    fiducials and bead positions are unaffected.
+    """
+    pyr = build_pyramid(img)
+    h, w = img.shape[:2]
+    full = (-0.5, w - 0.5, h - 0.5, -0.5)
+
+    state = {"key": None, "busy": False}
+    im = ax.imshow(pyr[-1], extent=full, **imshow_kw)
+    ax.set_xlim(full[0], full[1])
+    ax.set_ylim(full[2], full[3])
+
+    def refresh(_evt=None):
+        if state["busy"]:
+            return
+        x0, x1 = sorted(ax.get_xlim())
+        y0, y1 = sorted(ax.get_ylim())
+        x0 = max(x0, 0.0); y0 = max(y0, 0.0)
+        x1 = min(x1, float(w)); y1 = min(y1, float(h))
+        if x1 - x0 < 1 or y1 - y0 < 1:
+            return
+
+        # coarsest level whose crop still has a pixel per screen pixel
+        screen = max(ax.bbox.width, 1.0)
+        level = len(pyr) - 1
+        for i in range(len(pyr) - 1, 0, -1):
+            if (x1 - x0) * (pyr[i].shape[1] / w) >= screen:
+                level = i
+                break
+        else:
+            level = 0
+
+        f = pyr[level].shape[1] / w
+        cx0 = int(max(x0 * f, 0)); cy0 = int(max(y0 * f, 0))
+        cx1 = int(min(round(x1 * f), pyr[level].shape[1]))
+        cy1 = int(min(round(y1 * f), pyr[level].shape[0]))
+        if cx1 - cx0 < 2 or cy1 - cy0 < 2:
+            return
+
+        key = (level, cx0, cy0, cx1, cy1)
+        if key == state["key"]:
+            return
+
+        state["busy"] = True
+        try:
+            state["key"] = key
+            im.set_data(pyr[level][cy0:cy1, cx0:cx1])
+            # back to full-resolution coordinates
+            im.set_extent((cx0 / f - 0.5, cx1 / f - 0.5,
+                           cy1 / f - 0.5, cy0 / f - 0.5))
+            fig.canvas.draw_idle()
+        finally:
+            state["busy"] = False
+
+    ax.callbacks.connect("xlim_changed", refresh)
+    ax.callbacks.connect("ylim_changed", refresh)
+    fig.canvas.mpl_connect("draw_event", refresh)
+
+    log(f"image pyramid: {len(pyr)} levels, "
+        f"{' '.join(f'{q.shape[1]}x{q.shape[0]}' for q in pyr)}")
+    return im
 
 
 # =====================================================================
@@ -2223,7 +2331,7 @@ def bead_manual_selection(cfg: dict) -> None:
     fig = plt.figure(figsize=(15, 10))
     ax = fig.add_axes([0.04, 0.12, 0.93, 0.83])
     if img is not None:
-        ax.imshow(img, cmap="gray")
+        show_pyramid(fig, ax, img, cmap="gray")
     ax.set_aspect("equal")
 
     box = {"rect": None}
