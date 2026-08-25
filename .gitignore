@@ -38,3 +38,6 @@ flexCoords.txt
 targets*
 shot_placement_zoom.png
 targets_overlay.png
+
+# staging area for files awaiting manual deletion
+_to_delete/
