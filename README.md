@@ -172,10 +172,6 @@ shows up as a systematic error at every target, and because `FIDUCIALS` persists
 in the source file, reusing them is the path of least resistance. Re-pick after
 any remount.
 
-## 4. `python microMS_beadtargeting.py select` — bead manual selection
-
-
-
 ## 5. `python microMS_beadtargeting.py review`
 
 Once the selection looks right, preview it:
