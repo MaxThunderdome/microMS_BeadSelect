@@ -1,5 +1,25 @@
 # microMS_beadtargeting
 
+Dependencies: 
+
+pip install "numpy>=1.24" "scipy>=1.10" "opencv-python>=4.8" "matplotlib>=3.7"
+
+---
+
+## Commands
+
+python microMS_beadtargeting.py doctor    # environment check
+python microMS_beadtargeting.py convert   # image -> TIFF 
+python microMS_beadtargeting.py pick      # click fiducials -> saved here  **close window to complete selection**
+python microMS_beadtargeting.py select    # bead manual selection          **close window to complete selection**
+python microMS_beadtargeting.py check     # registration quality only
+python microMS_beadtargeting.py review    # show planned shots, no export
+python microMS_beadtargeting.py run       # detect, filter, shoot, export
+python microMS_beadtargeting.py selftest  # synthetic end-to-end test
+
+---
+## Outline
+
 Image-guided MALDI-MSI targeting of SPPS resin beads on ITO slides, for a
 Bruker timsTOF fleX.
 
@@ -13,10 +33,6 @@ all follow microMS:
 > Comi TJ, Neumann EK, Do TD, Sweedler JV. *microMS: A Python Platform for
 > Image-Guided Mass Spectrometry Profiling.* J. Am. Soc. Mass Spectrom. 2017,
 > 28(9), 1919–1928. DOI 10.1007/s13361-017-1704-1
-
-Dependencies: 
-
-pip install "numpy>=1.24" "scipy>=1.10" "opencv-python>=4.8" "matplotlib>=3.7"
 
 ## Before the scan
 
@@ -35,64 +51,23 @@ attention than anything downstream.
 
 ---
 
-## 1. Scan the matrix-coated slide
+## 1. 'python microMS_beadtargeting.py convert'
 
-Sample face up. Save as **TIFF**. JPEG is rejected.
-
-If the scanner only gives you JPEG or PNG:
+Scan slide. Save as **TIFF**. Default hardcoded name: "slide01.tif". JPEG is rejected but converter included
 
 ```
-python microMS_beadtargeting.py convert scan.jpg
+python microMS_beadtargeting.py convert slide01.jpg
 ```
 
 Colour input is converted to greyscale, 16-bit is scaled to 8-bit, and the
 result is written next to the source — or into the script folder if the source
 directory is read-only.
 
-| flag | effect |
-|---|---|
-| `--microms` | invert and add the `_c1` suffix, for **microMS** |
-| `--invert` | invert only |
-| `--downsample=0.5` | halve both dimensions |
-
-**Do not feed a `--microms` file to this pipeline.** microMS thresholds for
-bright objects so its input must be pre-inverted; this pipeline inverts
-internally at detection time. Inverting twice puts you back where you started
-with no error message. Convert with no flags for this tool, `--microms` for
-hers.
-
-`--downsample` changes µm/px by the same factor. The registration will recover
-the new scale correctly, but any pixel figure you wrote down by hand is now
-wrong.
-
-Note the scanner's µm/px. You never type it in, but you will compare it against
-the scale the registration recovers, and a mismatch means something is wrong.
-
-## 2. Edit `CONFIG`
-
-At the top of `microMS_beadtargeting.py`. Set `input["scan"]`. Under
-`detection`, keep `invert: True` if beads are darker than the matrix background
-— they usually are; thresholding is for *bright* objects, so without inverting
-it finds background instead of beads. Set `detection["roi"]` to the slide you
-want, in pixels, or dark mounting hardware inverts to bright and floods the
-object list.
-
-Check `bead-diameter`, `min-bead-separation` and `shot-placement`. Leave
-`output["write-xeo"]` False until MTP calibration is measured.
-
-**There is no software travel-limit check.** An earlier version had a
-`slide-bounds` window with values I invented; on a real stage every shot fell
-outside it and the target list came out empty with no error. The stage enforces
-its own limits in hardware, so that check is gone rather than re-guessed.
-
-## 3. Record fiducial stage coordinates
-
-On the instrument, drive to each scribed mark and write down the stage reading
-in µm. This is manual and it sets your accuracy ceiling.
-
-## 4. `python microMS_beadtargeting.py pick`
+## 2. `python microMS_beadtargeting.py pick`
 
 Opens the scan. Coordinate entry is **in the window**, not the terminal.
+
+**close window to continue** once fiducials are entered
 
 | action | effect |
 |---|---|
@@ -107,10 +82,13 @@ Opens the scan. Coordinate entry is **in the window**, not the terminal.
 
 Enter in the stage y box also commits, so entry can be keyboard-only.
 
-Large scans stay responsive: the image is held at several resolutions and only
-the visible region is drawn, at a detail level matched to the screen. Zoom in
-and it sharpens to full resolution automatically. Clicking precision is
-unaffected — coordinates are always full-resolution.
+Mock values (2 slides)
+top left: 18601.5 , -20310.8    (x, y)
+top right: 86083.1, -20161.0
+bottom left: 18646.7, -69830.8
+bottom right: 86124.7, -69700.2 
+
+**upgraded for performation** Preload high resolution window so zooming does not have to recalculate each box
 
 Both interactive windows zoom the same way:
 
@@ -122,46 +100,13 @@ Both interactive windows zoom the same way:
 | `f` | fit — back to the whole image |
 | **Zoom +** / **Zoom -** / **Fit** | the same, as buttons |
 
-The matplotlib toolbar's own zoom is deliberately not wired: it binds left-drag,
-which is already the box selector in `select`, and entering toolbar zoom mode
-silently swallows the clicks that add or toggle beads. Scroll and middle-drag
-stay clear of both mouse buttons.
-
 
 The worst-fitting fiducial is drawn red and live RMS sits in the title, so a
 mistyped coordinate shows up while you are still in the window. Only the
 `FIDUCIALS` block is rewritten; everything around it is untouched, and
 registration is reported on close.
 
-If matplotlib is on a non-interactive backend the command exits with a message
-rather than opening nothing — check with:
-
-```
-python -c "import matplotlib; print(matplotlib.get_backend())"
-```
-
-`Agg` cannot open a window. `TkAgg`, `QtAgg` and `MacOSX` are fine.
-
-## 5. `python microMS_beadtargeting.py check`
-
-Registration only. Reports RMS and per-fiducial residuals, recovered µm/px,
-rotation, reflection flag, and leave-one-out CV at ≥4 fiducials.
-
-Two things to look at. The recovered scale should match your scanner's known
-µm/px. The reflection flag should match what you physically expect — a slide
-scanned face-down, or a stage whose y counts opposite to the image, produces a
-genuine mirror, and `allow-reflection: true` lets the fit absorb it silently.
-
-With exactly three fiducials there is no cross-validation, and the in-sample
-residual is a lower bound on true error, not an estimate of it.
-
-**Do not reuse fiducials across sessions once the slide has been removed and
-reinserted.** The microMS guide is explicit about this: repositioning the sample
-shows up as a systematic error at every target, and because `FIDUCIALS` persists
-in the source file, reusing them is the path of least resistance. Re-pick after
-any remount.
-
-## 6. `python microMS_beadtargeting.py select` — bead manual selection
+## 3. `python microMS_beadtargeting.py selection`
 
 Auto filtering is a starting point, not a verdict. At low contrast the detector
 both merges real singles into false clumps and lets ragged pairs through, so the
@@ -208,11 +153,32 @@ shift the moment any detection parameter changes. On reload each override is
 matched to the nearest detected object within `match-radius-px`; anything with
 no match is reported rather than silently dropped.
 
-Once the selection looks right, preview it:
+## 4. `python microMS_beadtargeting.py check`
 
-```
-python microMS_beadtargeting.py review
-```
+Registration only. Reports RMS and per-fiducial residuals, recovered µm/px,
+rotation, reflection flag, and leave-one-out CV at ≥4 fiducials.
+
+Two things to look at. The recovered scale should match your scanner's known
+µm/px. The reflection flag should match what you physically expect — a slide
+scanned face-down, or a stage whose y counts opposite to the image, produces a
+genuine mirror, and `allow-reflection: true` lets the fit absorb it silently.
+
+With exactly three fiducials there is no cross-validation, and the in-sample
+residual is a lower bound on true error, not an estimate of it.
+
+**Do not reuse fiducials across sessions once the slide has been removed and
+reinserted.** The microMS guide is explicit about this: repositioning the sample
+shows up as a systematic error at every target, and because `FIDUCIALS` persists
+in the source file, reusing them is the path of least resistance. Re-pick after
+any remount.
+
+## 4. `python microMS_beadtargeting.py select` — bead manual selection
+
+
+
+## 5. `python microMS_beadtargeting.py review`
+
+Once the selection looks right, preview it:
 
 `review` fits the registration, applies every filter plus your manual
 selection, places the shots, and draws them on the scan -- green accepted
@@ -222,7 +188,7 @@ plus `review_zoom.png`, a close-up of the densest patch of selected beads
 (a window also opens unless `output.review-show` is false). It exports nothing; `run` is still the only
 command that writes target files.
 
-## 7. `python microMS_beadtargeting.py run`
+## 6. `python microMS_beadtargeting.py run`
 
 Everything `run` writes lands in `RESULTS/<date>_<time> run/`, a fresh
 timestamped folder per run, so no acquisition package ever overwrites an
@@ -250,137 +216,3 @@ The pipeline, in this order:
    object, crater vs. adjacent shot.
 8. **Serpentine ordering** and export.
 
-Outputs `targets.csv` (stage µm, in firing order), `targets_overlay.png`,
-`shot_placement_zoom.png`, and `targets_NNN.xeo` if MTP calibration is
-populated.
-
-`shot_placement_zoom.png` auto-centres on the densest patch of accepted beads at
-3× magnification. It is the picture to check before committing an acquisition —
-it shows whether shots actually land on clean matrix just off each bead edge.
-
-The overlay is the fastest way to catch a bad detection before you are standing
-at the instrument: green accepted, red rejected, filled blue shots, orange
-dotted dropped shots.
-
-## 8. Load into flexImaging / autoXecute
-
-See the `.xeo` gate below.
-
-## 9. Burn-mark validation
-
-Fire the list on a sacrificial slide, rescan, measure the offset from intended
-bead centres. Nothing upstream validates the physical chain — the transform can
-be numerically perfect and still be off if stage calibration or fiducial
-teaching is wrong. Do this before any real sample.
-
----
-
-## Shot placement: edge vs. centre
-
-`shot-placement.distance-reference` chooses how the shot radius is measured.
-
-**`edge` (default)** — each bead's own measured radius plus `edge-offset`.
-Adapts to real bead size. Shot-to-shot spacing then differs between beads of
-different size. `min-radius` / `max-radius` clamp the measured radius so one
-badly-measured bead cannot fling shots across the slide.
-
-**`center`** — a fixed `laser-distance` from every bead centre regardless of
-measured size. Uniform spacing; a smaller bead gets a larger real gap to its
-edge.
-
-Edge is the default because measured bead diameters on the current slides
-cluster near 80 µm rather than the nominal 90, so a fixed 60 µm from centre
-would sit ~20 µm off the edge rather than the intended 15.
-
----
-
-## Registration notes
-
-The transform is a **similarity** fit — uniform scale, rotation, optional
-reflection, translation — not affine. An affine fit through exactly three
-points is exactly determined and reports a residual of zero, which tells you
-nothing about registration quality. The similarity fit still leaves a real one.
-
-Shots are dropped **only on genuine crater overlap** or for falling outside
-`slide-bounds`. Nothing is trimmed to satisfy a cosmetic clearance margin.
-
----
-
-## Open gates
-
-**`mtp_calibration` must be measured before any `.xeo` is usable.**
-`UnitCoord_X/Y` in a `.xeo` are fractions of the plate, not microns, so there
-is a second registration stacked on the first:
-
-```
-scan pixels --[fiducials]--> stage µm --[MTP calibration]--> plate fraction
-```
-
-Fit it from three named MTP grid positions: drive to each on the instrument and
-record the stage µm, then pair each with its `UnitCoord` read out of a **real
-`.xeo` exported from flexImaging**. Spread them across the plate. While the
-list is empty the CSV is still written and the `.xeo` is skipped, rather than
-emitting a plausible-looking file that fires in the wrong place.
-
-The fit reports its own residual. A similarity fit assumes `UnitCoord_X` and
-`UnitCoord_Y` share one scale; if they are instead normalised independently to
-plate width and height, a non-square plate breaks that assumption and the
-residual goes large. Three points cannot distinguish the two cases any other
-way, so it warns rather than absorbing it.
-
-**The `.xeo` header is UNVERIFIED.** It declares `MTP Slide Adapter II`. Diff a
-genuine flexImaging export against a file from this writer before acquiring — a
-header mismatch is the most likely failure and a diff makes it obvious. Do not
-assume the Slide Adapter II uses the same A1/C20 position naming as a standard
-384-spot MTP; open a real export and look.
-
-**`focal-spot-um: 10` and `beam-scan-um: 20` are placeholders.** They affect
-only the crater-overlap check, so wrong values silently change which shots are
-dropped. They do not move any shot. Confirm with the instrument operator.
-
-**Confirm whether autoXecute random walk is enabled** in the acquisition
-method. It moves the actual firing position away from the coordinate you gave
-it, and at 15 µm off the bead edge there is not much room.
-
----
-
-## Diagnosing a problem
-
-Start here when something will not run:
-
-```
-python microMS_beadtargeting.py doctor
-```
-
-It checks Python version, all five packages, the matplotlib backend, config
-validity, fiducial and MTP counts, and whether the scan exists and actually
-decodes — then prints a pass/fail line. It catches the JPEG-instead-of-TIFF
-case and the `Agg`-backend case, which between them cause most startup
-failures.
-
-Add `-v` to any command for a timed trace:
-
-```
-python microMS_beadtargeting.py run -v
-```
-
-Every line is flushed immediately, so a crash mid-run leaves the trace intact
-rather than losing it to buffering. If detection returns nothing, the run
-prints the four settings worth checking, in order.
-
-## Commands
-
-```
-python microMS_beadtargeting.py doctor    # environment check
-python microMS_beadtargeting.py convert   # image -> TIFF
-python microMS_beadtargeting.py pick      # click fiducials -> saved here
-python microMS_beadtargeting.py select    # bead manual selection
-python microMS_beadtargeting.py check     # registration quality only
-python microMS_beadtargeting.py review    # show planned shots, no export
-python microMS_beadtargeting.py run       # detect, filter, shoot, export
-python microMS_beadtargeting.py selftest  # synthetic end-to-end test
-
-# -v / --verbose works on all of them
-
-pytest                                    # full regression suite
-```
