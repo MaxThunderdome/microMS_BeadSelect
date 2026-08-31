@@ -5,6 +5,15 @@ Dependencies:
 pip install "numpy>=1.24" "scipy>=1.10" "opencv-python>=4.8" "matplotlib>=3.7"
 
 ---
+```bash
+python microMS_beadtargeting.py doctor    # environment check
+python microMS_beadtargeting.py convert   # image -> TIFF 
+python microMS_beadtargeting.py pick      # click fiducials -> saved here  **close window to complete selection**
+python microMS_beadtargeting.py select    # bead manual selection          **close window to complete selection**
+python microMS_beadtargeting.py check     # registration quality only
+python microMS_beadtargeting.py review    # show planned shots, no export
+python microMS_beadtargeting.py run       # detect, filter, shoot, export
+python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 
 ## Commands
 
