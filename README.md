@@ -1,9 +1,9 @@
 # microMS_beadtargeting
 
 Dependencies: 
-
+```bash
 pip install "numpy>=1.24" "scipy>=1.10" "opencv-python>=4.8" "matplotlib>=3.7"
-
+```
 ---
 ```bash
 python microMS_beadtargeting.py doctor    # environment check
