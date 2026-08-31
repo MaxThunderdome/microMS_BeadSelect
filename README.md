@@ -16,10 +16,20 @@ python microMS_beadtargeting.py run       # detect, filter, shoot, export
 python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 
 ```
+Code Logic... (updated by hand_08/31/26 by Dan Parker)
+
+1) Created mockup of the microMS code from scratch.... Cons: mathematical recreation of functions in microMS. Pros: soft start pf frontend python user interface... 
+2) Restart from microMS remote git repo... scrapped backend and implemented native featue
+3) Modeled the code to explicitly include features from publication including BrukerMapper, writeXeo, Gui constraints, distance filtering, circular patterning. Designed for use with FleX MALDI MSI
+4) Modified blob parameters to further target beads.  Circular blob identification kept native and modified to include dynamic bead sizing
+5) Locating targets.... Scan image then "autoblob". *Select* region of interest option included. Removed threshold global sweep and replaced with "flat field subtraction" to account for the fixed thresholds of bead diameters. 
+6) Filtering of targets... Filter conditions... beads isolated with 150um from other beads or clumps of beads or other visible contaminants
+7) Patterning targets.... circular patterning was selected over rectangle or hexagonal packed to accommodate for bead shape. Minimum target-to-target distance and offset circumference (60um from bead center = 45um radius + 15um from edge of bead [assuming 10um laser]). Max number of targets bead size dependant (6 for 90um separated at 60, 120, 180, 240, 300 and 360 degrees)
+8) Coordinate transform.... point-based similarity registration between microMS and Bruker instrumental software. Code accommodates 3-15 fiducials. MTP Lide II assignment... B8, B10, B12, C8, C10, C12, etc. Worst fit to fiducials highlighted in red. Accuracy of point based similarity registration. Adjust fiducials until the red marked fiducial remains red even after accurate rejiggering.
 
 ## Commands
 
-python microMS_beadtargeting.py doctor    # environment check ```
+python microMS_beadtargeting.py doctor    # environment check 
 python microMS_beadtargeting.py convert   # image -> TIFF 
 python microMS_beadtargeting.py pick      # click fiducials -> saved here  **close window to complete selection**
 python microMS_beadtargeting.py select    # bead manual selection          **close window to complete selection**
