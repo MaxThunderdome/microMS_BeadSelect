@@ -15,6 +15,8 @@ python microMS_beadtargeting.py review    # show planned shots, no export
 python microMS_beadtargeting.py run       # detect, filter, shoot, export
 python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 
+```
+
 ## Commands
 
 python microMS_beadtargeting.py doctor    # environment check ```
