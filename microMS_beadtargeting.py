@@ -3100,13 +3100,11 @@ GUI_DEFAULTS = {
     "microscope_zoom": "10",
     "um_per_px": "7.0",             # provisional scale before fiducials
     "global_sweep": True,
-    "high_contrast": True,
     "flat_field": False,
     "bead_um": "90",
     "bead_dev_um": "30",
     "isolation_on": True,
     "isolation_um": "150",
-    "dynamic_sizing": True,
     "max_points": "1000",
     "matrix": "yes",
     "method": "default",
@@ -3114,7 +3112,7 @@ GUI_DEFAULTS = {
 
 # stored with the save, no effect on detection yet (marked * in the window)
 GUI_NO_EFFECT = ("image_type", "microscope_slide", "microscope_zoom",
-                 "high_contrast", "dynamic_sizing", "matrix")
+                 "matrix")
 
 # strict method: fraction of ALL objects found that is kept as beads,
 # best fit first (size closest to nominal, then most isolated)
@@ -3451,9 +3449,9 @@ def gui_run_cfg(state: GuiState, fids: list) -> dict:
     return cfg
 
 
-def gui_review_into(state: GuiState, layer, status) -> None:
-    """review() on the window's objects, then the planned shots drawn
-    on the same canvas so the window stays open for inspection."""
+def gui_review_into(state: GuiState, layer, status, master=None) -> None:
+    """review() on the window's objects; the planned shots are drawn on
+    the canvas and the review pictures open in a pop-up window."""
     fids, real = gui_fit_fiducials(state)
     cfg = gui_run_cfg(state, fids)
     try:
@@ -3467,6 +3465,58 @@ def gui_review_into(state: GuiState, layer, status) -> None:
     status(f"review: {live} shots on {sum(b.accepted for b in beads)} beads"
            + ("" if real else "  (provisional scale, no fiducials yet)")
            + "  -- pictures and check.txt in RESULTS")
+    # the folder review() just wrote: the newest "<timestamp> review"
+    folders = sorted((HERE / cfg["output"].get("results-dir", "RESULTS")).glob(
+        "* review"), key=lambda p: p.stat().st_mtime)
+    if folders and master is not None:
+        gui_review_window(master, folders[-1])
+
+
+def gui_review_window(master, folder: Path):
+    """Pop-up with the review pictures: review.png (accepted beads and
+    their shots) and review_zoom.png (close-up, every category), one at
+    a time, with the usual zoom and drag."""
+    import cv2
+    pics = [p for p in (folder / "review.png", folder / "review_zoom.png")
+            if p.exists()]
+    if not pics:
+        return None
+    win = tk.Toplevel(master, bg=GUI_BG)
+    win.title(f"microMS_beadtargeting -- review  {folder.name}")
+    win.geometry(f"{px(1100)}x{px(760)}")
+    gui_title_strip(win, f"Review   --   {folder.name}")
+
+    bar = tk.Frame(win, bg=GUI_BG, padx=8, pady=6)
+    bar.pack(fill="x", side="top")
+    which = tk.StringVar(win, pics[0].name)
+    for p in pics:
+        tk.Radiobutton(bar, text=p.name, variable=which, value=p.name,
+                       command=lambda: show(), font=F_BTN, indicatoron=False,
+                       bg=GUI_BTN, fg=GUI_TXT, selectcolor=GUI_LAVENDER,
+                       activebackground=GUI_BOX, relief="raised", bd=2,
+                       highlightthickness=0, padx=8).pack(side="left",
+                                                          padx=(0, 6))
+    gui_small(bar, "scroll = zoom     left-drag = move     f = fit     "
+                   f"folder: {folder}", anchor="w").pack(side="left",
+                                                         padx=(12, 0))
+    body = tk.Frame(win, bg=GUI_BG)
+    body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+    holder = {"widget": None}
+
+    def show():
+        if holder["widget"] is not None:
+            holder["widget"].destroy()
+        img = cv2.imread(str(folder / which.get()), cv2.IMREAD_COLOR)
+        if img is None:
+            return
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        fig, ax, canvas = gui_image_canvas(body, img)
+        holder["widget"] = canvas.get_tk_widget()
+        attach_zoom(fig, ax)
+        gui_attach_drag_pan(fig, ax, holder["widget"])
+
+    show()
+    return win
 
 
 class GuiBeadLayer:
@@ -3599,8 +3649,9 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     gui_small(f, ".jpg is offered for .tif conversion").pack(side="left",
                                                               padx=(8, 0))
 
-    # -- type of image + drop-down settings bar -------------------------
-    f = line("Type of image *")
+    # -- matrix + drop-down image settings ------------------------------
+    f = line("Matrix *")
+    gui_dropdown(f, v["matrix"], ["yes", "no", "beta"]).pack(side="left")
     zoom_check = [None]
     panel_open = [False]
 
@@ -3615,17 +3666,11 @@ def gui_select_window(master, state: GuiState, on_continue=None):
 
     def on_type(*_a):
         if v["image_type"].get() == "Microscope":
-            set_panel(True)
             zoom_check[0].config(state="normal", fg=GUI_TXT)
             v["microscope_slide"].set(True)
         else:
             zoom_check[0].config(state="disabled")
             v["microscope_slide"].set(False)
-
-    gui_dropdown(f, v["image_type"], ["Microscope", "highres scanner"],
-                 on_type).pack(side="left")
-    gui_label(f, "Matrix *").pack(side="left", padx=(18, 6))
-    gui_dropdown(f, v["matrix"], ["yes", "no"]).pack(side="left")
 
     r = row[0]
     bar_btn = tk.Button(body, text="v   Image Settings   v", font=F_SMALL,
@@ -3639,6 +3684,12 @@ def gui_select_window(master, state: GuiState, on_continue=None):
                      relief="sunken", bd=2)
     panel.grid(row=r, column=0, columnspan=2, sticky="ew")
     row[0] += 1
+    prow0 = tk.Frame(panel, bg=GUI_LAVENDER)
+    prow0.pack(anchor="w", pady=(0, 4))
+    gui_label(prow0, "Type of image *", bg=GUI_LAVENDER).pack(side="left")
+    gui_dropdown(prow0, v["image_type"],
+                 ["Microscope", "highres scanner", "beta"],
+                 on_type).pack(side="left", padx=(6, 0))
     prow = tk.Frame(panel, bg=GUI_LAVENDER)
     prow.pack(anchor="w")
     zoom_check[0] = gui_check(prow, v["microscope_slide"],
@@ -3667,9 +3718,6 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     gui_check(f, v["global_sweep"], "Global threshold sweep",
               font=F_SMALL).pack(side="left")
     gui_label(f, ";", font=F_SMALL).pack(side="left", padx=4)
-    gui_check(f, v["high_contrast"], "high contrast *",
-              font=F_SMALL).pack(side="left")
-    gui_label(f, ";", font=F_SMALL).pack(side="left", padx=4)
     gui_check(f, v["flat_field"], "flat field subtraction",
               font=F_SMALL).pack(side="left")
 
@@ -3684,10 +3732,7 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     # -- isolation window ------------------------------------------------
     f = line(widget=gui_check(body, v["isolation_on"], "Isolation window"))
     gui_box(f, v["isolation_um"], 5).pack(side="left")
-    gui_small(f, "um").pack(side="left", padx=(3, 14))
-    gui_label(f, ";", font=F_SMALL).pack(side="left", padx=(0, 6))
-    gui_check(f, v["dynamic_sizing"], "Dynamic bead sizing *",
-              font=F_SMALL).pack(side="left")
+    gui_small(f, "um").pack(side="left", padx=(3, 0))
 
     # -- max points ------------------------------------------------------
     f = line("Max number of points")
@@ -3942,7 +3987,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         if gui_save(state, win) is None:
             set_status("not saved")
             return
-        gui_review_into(state, layer, set_status)
+        gui_review_into(state, layer, set_status, win)
 
     def go_on() -> None:
         if no_selection():
@@ -3968,7 +4013,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
                        "About": about_menu_items(win)})
     gui_button(bottom, "Continue to correlate fiducials  (ready for MSI)  >",
                go_on, font=F_BIG).pack(side="right")
-    gui_button(bottom, "Save and review  (no matrix yet)", save_and_review,
+    gui_button(bottom, "Save and review", save_and_review,
                font=F_BIG).pack(side="right", padx=(0, 10))
 
     state.on_beads_changed = redraw_all
@@ -4273,7 +4318,7 @@ def gui_pick_window(master, state: GuiState):
                        f"for whole-scan detection")
             return
         if what == "review":
-            gui_review_into(state, layer, set_status)
+            gui_review_into(state, layer, set_status, win)
             return
         cfg = gui_run_cfg(state, active)
         try:
@@ -4412,4 +4457,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Ctrl+C in the console: a normal way to stop, not an error
+        bar_done()
+        say("\nstopped (Ctrl+C)")
