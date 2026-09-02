@@ -3649,9 +3649,8 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     gui_small(f, ".jpg is offered for .tif conversion").pack(side="left",
                                                               padx=(8, 0))
 
-    # -- matrix + drop-down image settings ------------------------------
-    f = line("Matrix *")
-    gui_dropdown(f, v["matrix"], ["yes", "no", "beta"]).pack(side="left")
+    # -- type of image, matrix + drop-down image settings ---------------
+    f = line("Type of image *")
     zoom_check = [None]
     panel_open = [False]
 
@@ -3666,11 +3665,18 @@ def gui_select_window(master, state: GuiState, on_continue=None):
 
     def on_type(*_a):
         if v["image_type"].get() == "Microscope":
+            set_panel(True)
             zoom_check[0].config(state="normal", fg=GUI_TXT)
             v["microscope_slide"].set(True)
         else:
             zoom_check[0].config(state="disabled")
             v["microscope_slide"].set(False)
+
+    gui_dropdown(f, v["image_type"],
+                 ["Microscope", "highres scanner", "beta"],
+                 on_type).pack(side="left")
+    gui_label(f, "Matrix *").pack(side="left", padx=(18, 6))
+    gui_dropdown(f, v["matrix"], ["yes", "no", "beta"]).pack(side="left")
 
     r = row[0]
     bar_btn = tk.Button(body, text="v   Image Settings   v", font=F_SMALL,
@@ -3684,12 +3690,6 @@ def gui_select_window(master, state: GuiState, on_continue=None):
                      relief="sunken", bd=2)
     panel.grid(row=r, column=0, columnspan=2, sticky="ew")
     row[0] += 1
-    prow0 = tk.Frame(panel, bg=GUI_LAVENDER)
-    prow0.pack(anchor="w", pady=(0, 4))
-    gui_label(prow0, "Type of image *", bg=GUI_LAVENDER).pack(side="left")
-    gui_dropdown(prow0, v["image_type"],
-                 ["Microscope", "highres scanner", "beta"],
-                 on_type).pack(side="left", padx=(6, 0))
     prow = tk.Frame(panel, bg=GUI_LAVENDER)
     prow.pack(anchor="w")
     zoom_check[0] = gui_check(prow, v["microscope_slide"],
