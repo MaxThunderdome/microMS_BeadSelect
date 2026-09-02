@@ -4,16 +4,15 @@ Dependencies:
 ```bash
 pip install "numpy>=1.24" "scipy>=1.10" "opencv-python>=4.8" "matplotlib>=3.7"
 ```
+tkinter (the windows) ships with python.org Python on Windows.
+
 ---
 ```bash
-python microMS_beadtargeting.py doctor    # environment check
-python microMS_beadtargeting.py convert   # image -> TIFF 
-python microMS_beadtargeting.py pick      # click fiducials -> saved here  **close window to complete selection**
-python microMS_beadtargeting.py select    # bead manual selection          **close window to complete selection**
-python microMS_beadtargeting.py check     # registration quality only
-python microMS_beadtargeting.py review    # show planned shots, no export
+python microMS_beadtargeting.py gui       # windows: parameters -> beads -> fiducials
+python microMS_beadtargeting.py select    # same as gui (starts at the parameters window)
+python microMS_beadtargeting.py pick      # fiducial window only, on the CONFIG scan
+python microMS_beadtargeting.py review    # planned shots + check.txt, no export
 python microMS_beadtargeting.py run       # detect, filter, shoot, export
-python microMS_beadtargeting.py selftest  # synthetic end-to-end test
 
 ```
 Code Logic... (updated by hand_08/31/26 by Dan Parker)
@@ -29,14 +28,14 @@ Code Logic... (updated by hand_08/31/26 by Dan Parker)
 
 ## Commands
 
-python microMS_beadtargeting.py doctor    # environment check 
-python microMS_beadtargeting.py convert   # image -> TIFF 
-python microMS_beadtargeting.py pick      # click fiducials -> saved here  **close window to complete selection**
-python microMS_beadtargeting.py select    # bead manual selection          **close window to complete selection**
-python microMS_beadtargeting.py check     # registration quality only
-python microMS_beadtargeting.py review    # show planned shots, no export
+python microMS_beadtargeting.py gui       # windows: parameters -> beads -> fiducials
+python microMS_beadtargeting.py select    # same as gui (starts at the parameters window)
+python microMS_beadtargeting.py pick      # fiducial window only, on the CONFIG scan
+python microMS_beadtargeting.py review    # planned shots + check.txt, no export
 python microMS_beadtargeting.py run       # detect, filter, shoot, export
-python microMS_beadtargeting.py selftest  # synthetic end-to-end test
+
+Add `-v` to any command for a timed trace. Long steps show a progress bar in
+the console.
 
 ---
 ## Outline
@@ -45,7 +44,9 @@ Image-guided MALDI-MSI targeting of SPPS resin beads on ITO slides, for a
 Bruker timsTOF fleX.
 
 One file. `microMS_beadtargeting.py` holds the pipeline and, at the top, a
-`CONFIG` dict with every tunable parameter.
+`CONFIG` dict with every tunable parameter. The windows (the `WINDOWED FLOW`
+section near the end of the file) drive that same pipeline; they do not
+reimplement it.
 
 The workflow ordering, the point-based similarity registration, the
 nearest-neighbour distance filter and the fiducial click-training interaction
@@ -54,6 +55,33 @@ all follow microMS:
 > Comi TJ, Neumann EK, Do TD, Sweedler JV. *microMS: A Python Platform for
 > Image-Guided Mass Spectrometry Profiling.* J. Am. Soc. Mass Spectrom. 2017,
 > 28(9), 1919–1928. DOI 10.1007/s13361-017-1704-1
+
+microMS source is vendored, unmodified, under `microms/` (the `.xeo` files are
+written by its own `brukerMapper`); `flex_mapper.py` is the timsTOF fleX mapper
+it does not ship. See `ATTRIBUTION.md`.
+
+Repository layout:
+
+```
+microMS_beadtargeting.py   the pipeline, CONFIG at the top, windows at the end
+flex_mapper.py             timsTOF fleX coordinate mapper (microMS subclass)
+microms/                   vendored microMS, never edited
+tests/test_pipeline.py     pytest suite, no instrument needed
+SAVES/                     bead selections and last-used parameters (created on use)
+RESULTS/                   one timestamped folder per review / run (created on use)
+manual_selection.csv       accept/reject decisions that review and run obey
+```
+
+## Lab order of operations
+
+1. Glue beads to the slide.
+2. Scan the slide (TIFF; a .jpg is offered for conversion in the window).
+3. `select` — pick parameters, draw boxes on the scan, analyze them, decide.
+   Either review the pictures now, spray matrix and come back, or go straight
+   on to the fiducials.
+4. Load the slide into the timsTOF, find the fiducials, enter their stage
+   readings in the fiducial window.
+5. Save and run — `.xeo` and `.run` land in `RESULTS/`.
 
 ## Before the scan
 
@@ -72,66 +100,46 @@ attention than anything downstream.
 
 ---
 
-## 1. 'python microMS_beadtargeting.py convert'
+## 1. `python microMS_beadtargeting.py gui` — parameters window
 
-Scan slide. Save as **TIFF**. Default hardcoded name: "slide01.tif". JPEG is rejected but converter included
+Opens on the last-used values (`SAVES/last_settings.json`); **File → Restore
+default values** resets them. **File → Save / Save As / Load** work here and in
+the bead window.
 
-```
-python microMS_beadtargeting.py convert slide01.jpg
-```
+| control | effect |
+|---|---|
+| **Upload image...** | choose the scan. A .jpg/.png is offered for conversion to .tif (Yes / Exit); the .tif is written next to the original and used as the slide image |
+| Type of image, Matrix | recorded with the save (no effect on detection yet, marked `*`) |
+| v Image Settings v | drops down the microscope zoom and the provisional scale (µm/px) used by the isolation filter until fiducials exist |
+| Location of targets | preselects the bead-matching method (Global threshold sweep → default, flat field subtraction → quick) |
+| Average bead size + deviation | the size window; read the measured sizes off the bead window's info box and set this to match your beads |
+| Isolation window | `min-bead-separation`; untick to skip the isolation filter |
+| Max number of points | cap on accepted beads (best size fit first, then most isolated) |
+| **Continue to bead selection** | loads the scan and opens the bead window |
 
-Colour input is converted to greyscale, 16-bit is scaled to 8-bit, and the
-result is written next to the source — or into the script folder if the source
-directory is read-only.
+## 2. Bead selection window
 
-## 2. `python microMS_beadtargeting.py pick`
-
-Opens the scan. Coordinate entry is **in the window**, not the terminal.
-
-**close window to continue** once fiducials are entered
+Starts as a blank canvas: nothing is detected until you draw a box.
 
 | action | effect |
 |---|---|
-| right-click on the image | set the pending pixel (gold X) |
-| type into stage x / stage y | the measured stage reading |
-| Tab | switch between the two boxes |
-| Ctrl+V | paste; a copied pair like `18601.5, -20310.8` fills both boxes |
-| **Add fiducial** | commit the pair |
-| **Remove nearest** | delete the fiducial nearest the last right-click |
-| **Reset** | clear the list |
-| close the window | write `FIDUCIALS` into the source file |
+| left-drag | draw a box (the box stays until replaced) |
+| right-drag | move the view |
+| scroll wheel, `+` / `-`, `f` | zoom about the cursor / centre, fit |
+| **Analyze box** | find beads inside the box with the chosen method, then run the pipeline's isolation and size filters over everything found so far |
+| **Accept box** / **Reject box** | override every visible bead inside the box |
+| **Clear box** | remove the objects inside the box, keep the box — pick another method and analyze the same area again |
+| **Manual accept / reject** (toggle) | while on, a left-click flips the bead under the cursor |
+| checkboxes | show or hide each colour |
+| File → Discard manual overrides / Clear all beads | as named |
 
-Enter in the stage y box also commits, so entry can be keyboard-only.
+Methods:
 
-Mock values (2 slides)
-top left: 18601.5 , -20310.8    (x, y)
-top right: 86083.1, -20161.0
-bottom left: 18646.7, -69830.8
-bottom right: 86124.7, -69700.2 
-
-**upgraded for performation** Preload high resolution window so zooming does not have to recalculate each box
-
-Both interactive windows zoom the same way:
-
-| action | effect |
+| method | what it does |
 |---|---|
-| scroll wheel | zoom about the cursor |
-| middle-drag | pan |
-| `+` / `-` | zoom about the centre |
-| `f` | fit — back to the whole image |
-| **Zoom +** / **Zoom -** / **Fit** | the same, as buttons |
-
-
-The worst-fitting fiducial is drawn red and live RMS sits in the title, so a
-mistyped coordinate shows up while you are still in the window. Only the
-`FIDUCIALS` block is rewritten; everything around it is untouched, and
-registration is reported on close.
-
-## 3. `python microMS_beadtargeting.py selection`
-
-Auto filtering is a starting point, not a verdict. At low contrast the detector
-both merges real singles into false clumps and lets ragged pairs through, so the
-operator gets the final say.
+| default | global threshold sweep (OpenCV blob detector) |
+| quick | flat-field subtraction then connected components |
+| strict | both, combined; then only the best-fitting 5 % of everything found is kept (size closest to nominal, then most isolated) |
 
 | colour | meaning |
 |---|---|
@@ -140,72 +148,80 @@ operator gets the final say.
 | purple | screened as a clump |
 | blue, thick | manually overridden |
 
+The info box shows accepted / total, overrides, boxes analysed, and the
+measured size (min, median, average, max in µm) of the accepted beads and of
+the contaminants in the current box — use it to set the bead size window.
+
+Two ways out:
+
+- **Save and review (no matrix yet)** — saves `SAVES/<timestamp>[_name].json`
+  (parameters, scan path, boxes, every object with its decision), runs
+  `review` on exactly these beads, and draws the planned shots on the canvas so
+  you can zoom around for hairs and contaminants. Later: reopen, **File → Load**,
+  continue.
+- **Continue to correlate fiducials (ready for MSI)** — opens the fiducial
+  window.
+
+Both refuse with "no beads selected" if nothing is accepted.
+
+Detection is done on the box you draw with the pipeline's own detectors; the
+isolation and size filters, the clump screen and the manual overrides are the
+same functions `run` uses. Overrides are stored by **pixel position, not
+index**, so they survive re-analysis.
+
+## 3. `python microMS_beadtargeting.py pick` — fiducial window
+
+Also reached from the bead window. Coordinate entry is **in the window**.
+
 | action | effect |
 |---|---|
-| right-click a bead | toggle accept/reject |
-| drag a box | select a region |
-| **Accept box** | accept every bead inside |
-| **Reject box** | reject every bead inside |
-| **Clear box** | drop the region selection |
-| **Reset** | discard all manual overrides |
-| checkboxes | show or hide each colour |
-| close the window | write `manual_selection.csv` |
+| right-click on the image | set the pending pixel (gold X) |
+| type into stage x / stage y | the measured stage reading |
+| Tab | switch between the two boxes |
+| Ctrl+V | paste; a copied pair like `18601.5, -20310.8` fills both boxes |
+| Enter in stage y, or **Add fiducial** | commit the pair |
+| **Remove nearest** | delete the fiducial nearest the last right-click |
+| **Reset** | clear the list |
+| table on the left | every fiducial; edit X / Y and press Enter to re-fit; **hide** leaves one out of the fit without deleting it; **x** deletes it |
+| **Save and run** | write the (non-hidden) fiducials into `FIDUCIALS` in the source file, then `run` |
+| **Save and review** | write the fiducials, then `review`, drawn in the window |
 
-The three checkboxes control what is drawn. On a crowded slide the red and
-purple circles bury the green ones — 549 of 1003 objects were clumps on the
-reference scan — so unticking them is the only practical way to see what will
-actually be acquired.
+The worst-fitting fiducial is drawn red and the live RMS, worst residual and
+µm/px sit under the table. Hidden fiducials are grey. Only the `FIDUCIALS`
+block of the source file is rewritten. Three are needed; with no bead
+selection loaded, the buttons save the fiducials and stop.
 
-Hiding is display only. A hidden bead keeps its accept/reject state, still
-counts as an isolation neighbour, and is still exported. But it is **not
-clickable and not caught by the box tools**, so you cannot toggle something you
-cannot see. The title lists any hidden category so a filtered view is never
-mistaken for the whole picture.
-
-The box tools are the fast path — draw around a debris field or a dense patch
-and reject the lot in one click, rather than clicking a hundred beads.
-
-Zoom with the scroll wheel, pan with middle-drag, `f` to fit. On an 8000 px scan
-you will want to zoom in before judging individual beads — at full extent a bead
-is a single pixel.
-
-Overrides are stored by **pixel position, not index**, because detection indices
-shift the moment any detection parameter changes. On reload each override is
-matched to the nearest detected object within `match-radius-px`; anything with
-no match is reported rather than silently dropped.
-
-## 4. `python microMS_beadtargeting.py check`
-
-Registration only. Reports RMS and per-fiducial residuals, recovered µm/px,
-rotation, reflection flag, and leave-one-out CV at ≥4 fiducials.
-
-Two things to look at. The recovered scale should match your scanner's known
-µm/px. The reflection flag should match what you physically expect — a slide
-scanned face-down, or a stage whose y counts opposite to the image, produces a
-genuine mirror, and `allow-reflection: true` lets the fit absorb it silently.
-
-With exactly three fiducials there is no cross-validation, and the in-sample
-residual is a lower bound on true error, not an estimate of it.
+Mock values (2 slides)
+top left: 18601.5 , -20310.8    (x, y)
+top right: 86083.1, -20161.0
+bottom left: 18646.7, -69830.8
+bottom right: 86124.7, -69700.2 
 
 **Do not reuse fiducials across sessions once the slide has been removed and
-reinserted.** The microMS guide is explicit about this: repositioning the sample
-shows up as a systematic error at every target, and because `FIDUCIALS` persists
-in the source file, reusing them is the path of least resistance. Re-pick after
-any remount.
+reinserted.** Repositioning the sample shows up as a systematic error at every
+target, and because `FIDUCIALS` persists in the source file, reusing them is
+the path of least resistance. Re-pick after any remount.
 
-## 5. `python microMS_beadtargeting.py review`
+## 4. `python microMS_beadtargeting.py review`
 
-Once the selection looks right, preview it:
+Fits the registration, applies every filter plus the manual selection, places
+the shots, and draws them on the scan. Each review gets its own
+`RESULTS/<date>_<time> review/` folder holding:
 
-`review` fits the registration, applies every filter plus your manual
-selection, places the shots, and draws them on the scan -- green accepted
-beads, blue shot craters, orange dotted for dropped shots. Each review
-gets its own `RESULTS/<date>_<time> review/` folder holding `review.png`
-plus `review_zoom.png`, a close-up of the densest patch of selected beads
-(a window also opens unless `output.review-show` is false). It exports nothing; `run` is still the only
-command that writes target files.
+- `check.txt` — the registration report: RMS and per-fiducial residuals,
+  recovered µm/px, rotation, reflection flag, leave-one-out CV at ≥4 fiducials.
+  The recovered scale should match your scanner's known µm/px; the reflection
+  flag should match what you physically expect.
+- `review.png` — the accepted beads and their shots (blue craters, orange
+  dotted for dropped shots).
+- `review_zoom.png` — a close-up of the densest patch, with every category
+  drawn (red rejects, purple clumps included).
 
-## 6. `python microMS_beadtargeting.py run`
+It exports nothing; `run` is still the only command that writes target files.
+From the windows, review runs on the beads you selected; from the console it
+detects over the whole scan.
+
+## 5. `python microMS_beadtargeting.py run`
 
 Everything `run` writes lands in `RESULTS/<date>_<time> run/`, a fresh
 timestamped folder per run, so no acquisition package ever overwrites an
@@ -229,7 +245,11 @@ The pipeline, in this order:
 4. **Size filter** on what survives.
 5. **Manual overrides** from `manual_selection.csv`, if present.
 6. **Shot placement**, one per angle in `laser-shot-angles`.
-7. **Validation** — slide bounds, crater vs. own bead, crater vs. neighbouring
+7. **Validation** — crater vs. own bead, crater vs. neighbouring
    object, crater vs. adjacent shot.
 8. **Serpentine ordering** and export.
 
+From the windows, `run` receives the selected beads through `input.beads`
+(`SAVES/<stem>_beads.csv`) and `manual_selection.csv`, so it shoots exactly
+what the window showed. A console `run` afterwards follows those same
+decisions until `manual_selection.csv` is cleared or replaced.

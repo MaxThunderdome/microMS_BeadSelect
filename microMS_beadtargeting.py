@@ -20,8 +20,9 @@ interaction all follow microMS:
 
 Algorithms and interactions here are reimplemented independently. Only
 file-format constants (the .xeo header/footer) are reproduced so that
-files interoperate; they are marked FORMAT SPEC. microMS carries an
-Illinois copyright with no explicit licence, so nothing else is copied.
+files interoperate; they are marked FORMAT SPEC. microMS is MIT
+licensed ((c) 2016 troycomi) and is vendored unmodified under microms/;
+see ATTRIBUTION.md.
 
 Usage
 -----
