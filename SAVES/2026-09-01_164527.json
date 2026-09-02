@@ -1,0 +1,27 @@
+{
+ "format": "microMS_beadtargeting select 1",
+ "saved": "2026-09-01_164527",
+ "scan": "C:\\Users\\danpa\\Code_Docs\\microMS_BeadSelect\\slide01.tif",
+ "params": {
+  "scan": "slide01.tif",
+  "image_type": "highres scanner",
+  "microscope_slide": false,
+  "microscope_zoom": "10",
+  "um_per_px": "7.0",
+  "global_sweep": true,
+  "high_contrast": true,
+  "flat_field": false,
+  "bead_um": "90",
+  "bead_dev_um": "30",
+  "isolation_on": true,
+  "isolation_um": "150",
+  "dynamic_sizing": true,
+  "remove_clusters": true,
+  "contaminant": "quick",
+  "max_points": "1000",
+  "matrix": "yes",
+  "method": "robust"
+ },
+ "boxes": [],
+ "beads": []
+}
