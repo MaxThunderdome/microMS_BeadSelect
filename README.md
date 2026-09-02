@@ -140,12 +140,13 @@ Methods:
 | default | global threshold sweep (OpenCV blob detector) |
 | quick | flat-field subtraction then connected components |
 | strict | both, combined; then only the best-fitting 5 % of everything found is kept (size closest to nominal, then most isolated) |
+| threshold | default, with the threshold step set on the slider under the dropdown (smaller steps find fainter beads and take longer; the slider is live only for this method) |
 
 | colour | meaning |
 |---|---|
 | green | accepted |
-| red | rejected by a filter |
-| purple | screened as a clump |
+| red | rejected: near a contaminant or another bead, outside the size window, or over the max number of points |
+| purple | a clump, or a bead rejected because a clump sits inside its isolation window |
 | blue, thick | manually overridden |
 
 The info box shows accepted / total, overrides, boxes analysed, and the

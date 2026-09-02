@@ -12,5 +12,6 @@
  "isolation_um": "150",
  "max_points": "1000",
  "matrix": "yes",
- "method": "quick"
+ "method": "threshold",
+ "threshold_step": "19"
 }

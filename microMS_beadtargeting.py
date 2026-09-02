@@ -3108,6 +3108,7 @@ GUI_DEFAULTS = {
     "max_points": "1000",
     "matrix": "yes",
     "method": "default",
+    "threshold_step": "10",         # threshold method only; seeded from CONFIG
 }
 
 # stored with the save, no effect on detection yet (marked * in the window)
@@ -3159,6 +3160,7 @@ def gui_make_vars(master, cfg: dict) -> dict:
     v["scan"].set(str(cfg["input"]["scan"]))
     v["bead_um"].set(f"{float(cfg['bead-diameter']):g}")
     v["isolation_um"].set(f"{float(cfg['min-bead-separation']):g}")
+    v["threshold_step"].set(f"{int(cfg['detection']['threshold-step'])}")
     for k, val in gui_settings_load().items():
         if k == "scan" and not val:
             continue
@@ -3189,7 +3191,7 @@ def gui_apply_params(cfg: dict, v: dict) -> dict:
     cfg["min-bead-separation"] = (
         gui_float(v["isolation_um"], float(cfg["min-bead-separation"]))
         if v["isolation_on"].get() else 0.0)
-    cfg["detection"]["method"] = ("blob" if v["method"].get() == "default"
+    cfg["detection"]["method"] = ("blob" if v["method"].get() in ("default", "threshold")
                                   else "flatfield")
     cfg["gui-max-points"] = int(gui_float(v["max_points"], 1000))
     cfg["gui-method"] = v["method"].get()
@@ -3250,22 +3252,36 @@ def gui_detect_region(img, box, cfg: dict, method: str) -> list:
     d = dict(cfg["detection"])
     sub = img[y0:y1, x0:x1]
     g = cv2.bitwise_not(sub) if d.get("invert", True) else sub
-    if method == "default":
-        found = _detect_blobdetector(g, d)            # global threshold sweep
-    elif method == "quick":
-        found = _detect_flatfield(g, d)
-    else:
-        # strict: both detectors, objects combined (an object seen by
-        # both counts once); gui_refilter then keeps only the best few
-        found = list(_detect_flatfield(g, d))
-        extra = _detect_blobdetector(g, d)
+    tol = float(cfg.get("manual-selection", {}).get("match-radius-px", 12))
+
+    def add_new(found, extra):
+        """Objects of `extra` not already in `found` (same position)."""
         if found and extra:
-            tol = float(cfg.get("manual-selection", {}).get("match-radius-px",
-                                                            12))
             tree = cKDTree(np.array([[f[0], f[1]] for f in found]))
             dd, _ = tree.query(np.array([[f[0], f[1]] for f in extra]))
             extra = [f for f, d_ in zip(extra, dd) if d_ > tol]
-        found.extend(extra)
+        return found + list(extra)
+
+    if method in ("default", "threshold"):
+        found = list(_detect_blobdetector(g, d))      # global threshold sweep
+    elif method == "quick":
+        found = list(_detect_flatfield(g, d))
+    else:
+        # strict: both detectors, objects combined (an object seen by
+        # both counts once); gui_refilter then keeps only the best few
+        found = add_new(list(_detect_flatfield(g, d)), _detect_blobdetector(g, d))
+
+    # Neighbour pass: clusters and debris wider than the size cap never
+    # reach the object list (the threshold sweep does not report them
+    # at all), so the isolation filter could not see them and a bead
+    # beside a clump passed as isolated. Find them with the flat-field
+    # detector at a wide cap and add them as clumps: never accepted,
+    # purple in the window, but present for the isolation filter.
+    wide = dict(d)
+    wide["max-diameter-px"] = max(int(d.get("max-diameter-px", 30)) * 4, 120)
+    big = [(x, y, size, True) for x, y, size, cl in _detect_flatfield(g, wide)
+           if size > float(d.get("max-diameter-px", 30)) or cl]
+    found = add_new(found, big)
     return [Bead(x + x0, y + y0, size, clumped=cl) for x, y, size, cl in found]
 
 
@@ -3298,6 +3314,7 @@ def gui_refilter(state: GuiState) -> dict:
     to_stage(beads, T)
     isolation_filter(beads, float(cfg["min-bead-separation"]))
     shape_filter(beads, cfg)
+    gui_mark_near_clump(beads, float(cfg["min-bead-separation"]))
     for b in beads:
         if b.manual:
             gui_set_manual(b, b.manual)
@@ -3324,10 +3341,30 @@ def gui_refilter(state: GuiState) -> dict:
     return cfg
 
 
+def gui_mark_near_clump(beads: list, min_sep_um: float) -> None:
+    """Window only: a bead that failed isolation with a clump inside
+    the isolation window is drawn purple with the clumps; one failed
+    by anything else (a contaminant, another bead) stays red. The
+    filters are untouched -- this reads their result and looks the
+    neighbours up again."""
+    for b in beads:
+        b.near_clump = False
+    if len(beads) < 2 or min_sep_um <= 0:
+        return
+    pts = np.array([[b.x_um, b.y_um] for b in beads], float)
+    tree = cKDTree(pts)
+    for i, b in enumerate(beads):
+        if b.reject_category == "not isolated":
+            b.near_clump = any(
+                beads[j].clumped
+                for j in tree.query_ball_point(pts[i], min_sep_um)
+                if j != i)
+
+
 def gui_bead_category(b) -> str:
     if b.accepted:
         return "accepted"
-    if b.clumped:
+    if b.clumped or getattr(b, "near_clump", False):
         return "clumped"
     return "rejected"
 
@@ -3335,7 +3372,7 @@ def gui_bead_category(b) -> str:
 def gui_bead_colour(b) -> str:
     if b.accepted:
         return GUI_COL["accepted"]
-    if b.clumped:
+    if b.clumped or getattr(b, "near_clump", False):
         return GUI_COL["clumped"]
     if b.reject_category == "manual":
         return GUI_COL["manual"]
@@ -3436,9 +3473,26 @@ def gui_write_run_inputs(state: GuiState, cfg: dict) -> Path:
     return csv_path
 
 
+def gui_size_limits_px(state: GuiState, cfg: dict) -> dict:
+    """Tie the detectors' pixel pre-filter to the size window in the
+    parameters window: half of (size - deviation) up to double
+    (size + deviation), converted with the current um/px. The margin
+    keeps debris near the beads visible to the isolation filter."""
+    T = gui_transform(state, cfg)
+    nominal = float(cfg["bead-diameter"])
+    dev = nominal * float(cfg.get("bead-diameter-tolerance", 0.35))
+    lo_um, hi_um = max(nominal - dev, 1.0) * 0.5, (nominal + dev) * 2.0
+    cfg["detection"]["min-diameter-px"] = max(2, int(lo_um / T.um_per_px))
+    cfg["detection"]["max-diameter-px"] = max(
+        cfg["detection"]["min-diameter-px"] + 2,
+        int(round(hi_um / T.um_per_px)))
+    return cfg
+
+
 def gui_run_cfg(state: GuiState, fids: list) -> dict:
     import copy
-    cfg = gui_apply_params(copy.deepcopy(state.cfg), state.v)
+    cfg = gui_size_limits_px(state,
+                             gui_apply_params(copy.deepcopy(state.cfg), state.v))
     cfg["fiducials"] = [dict(f) for f in fids]
     if state.path is not None:
         cfg["input"]["scan"] = str(state.path)
@@ -3831,15 +3885,38 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         v["method"].set("default")
     elif v["flat_field"].get():
         v["method"].set("quick")
-    if v["method"].get() not in ("default", "quick", "strict"):
+    if v["method"].get() not in ("default", "quick", "strict", "threshold"):
         v["method"].set("default")          # a save made under the old names
-    gui_dropdown(side, v["method"], ["default", "quick", "strict"]).pack(
+    gui_dropdown(side, v["method"],
+                 ["default", "quick", "strict", "threshold"]).pack(
         anchor="w", pady=(2, 2), fill="x")
     gui_small(side, "default   global threshold sweep\n"
                     "quick      flat-field subtraction\n"
-                    "strict     both combined, keep the best 5 %",
+                    "strict     both combined, keep the best 5 %\n"
+                    "threshold  default, with the step set below",
               justify="left", anchor="w").pack(anchor="w", fill="x",
-                                               pady=(0, 8))
+                                               pady=(0, 4))
+    # threshold step slider: live only for the threshold method, so
+    # default keeps CONFIG's step
+    trow = tk.Frame(side, bg=GUI_BG)
+    trow.pack(anchor="w", fill="x", pady=(0, 8))
+    step_lbl = gui_label(trow, "threshold step", font=F_SMALL)
+    step_lbl.pack(side="left")
+    step_bar = tk.Scale(trow, variable=v["threshold_step"], from_=1, to=50,
+                        orient="horizontal", resolution=1, length=px(120),
+                        font=F_SMALL, bg=GUI_BG, fg=GUI_TXT,
+                        troughcolor=GUI_BOX, activebackground=GUI_BOX,
+                        highlightthickness=0, bd=1, sliderrelief="raised")
+    step_bar.pack(side="left", padx=(6, 0))
+
+    def step_state(*_a) -> None:
+        if step_bar.winfo_exists():         # the trace outlives the window
+            on = v["method"].get() == "threshold"
+            step_bar.config(state="normal" if on else "disabled",
+                            fg=GUI_TXT if on else GUI_DIM)
+            step_lbl.config(fg=GUI_TXT if on else GUI_DIM)
+    v["method"].trace_add("write", step_state)
+    step_state()
     gui_button(side, "Analyze box", lambda: analyze(),
                font=F_BIG).pack(fill="x", pady=(4, 0))
     gui_small(side, "left-drag a box on the image, then analyze;\n"
@@ -3861,9 +3938,13 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     gui_label(side, "Show", font=F_TITLE).pack(anchor="w")
     show_vars = {}          # kept here: an unreferenced tk variable is
     for key, t, col in (("accepted", "accepted (green)", "#1e7d1e"),
-                        ("clumped", "clumped (purple)", "#5b3a9e"),
-                        ("rejected", "rejected (red)", "#b01c1c")):
-        show_vars[key] = tk.BooleanVar(win, True)      # garbage-collected
+                        ("clumped", "clumped / near a clump (purple)",
+                         "#5b3a9e"),
+                        ("rejected", "rejected / near a contaminant (red)",
+                         "#b01c1c")):
+        # only the accepted beads are drawn until a box is ticked; these
+        # are window switches, never saved
+        show_vars[key] = tk.BooleanVar(win, key == "accepted")   # GC'd
         cb = gui_check(side, show_vars[key], t, font=F_SHOW,
                        command=lambda: layer.refresh())
         cb.config(fg=col, activeforeground=col)
@@ -3939,7 +4020,11 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         method = v["method"].get()
         bar_start("analyze", 3)
         bar_step(f"detecting ({method})")
-        cfg = gui_apply_params(copy.deepcopy(state.cfg), v)
+        cfg = gui_size_limits_px(state,
+                                 gui_apply_params(copy.deepcopy(state.cfg), v))
+        if method == "threshold":
+            cfg["detection"]["threshold-step"] = max(
+                1, int(round(gui_float(v["threshold_step"], 10))))
         found = gui_detect_region(state.img, box.box, cfg, method)
         added = gui_merge(state, found, cfg)
         state.boxes.append(tuple(box.box))
