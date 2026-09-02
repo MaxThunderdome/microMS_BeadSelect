@@ -12,5 +12,5 @@
  "isolation_um": "150",
  "max_points": "1000",
  "matrix": "yes",
- "method": "default"
+ "method": "quick"
 }

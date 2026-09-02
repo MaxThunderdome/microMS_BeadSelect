@@ -3472,6 +3472,44 @@ def gui_review_into(state: GuiState, layer, status, master=None) -> None:
         gui_review_window(master, folders[-1])
 
 
+def gui_open_folder(folder: Path) -> None:
+    """Show the folder in the file manager (Explorer on Windows)."""
+    import os
+    import platform
+    import subprocess
+    try:
+        if hasattr(os, "startfile"):                 # Windows
+            os.startfile(str(folder))
+        elif platform.system() == "Darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
+    except OSError as e:
+        say(f"could not open {folder}: {e}")
+
+
+def gui_run_done(parent, folder) -> None:
+    """'Run done' pop-up, then the results folder is opened."""
+    dlg = tk.Toplevel(parent, bg=GUI_BG)
+    dlg.title("Run done")
+    dlg.resizable(False, False)
+    gui_title_strip(dlg, "Run done")
+    body = tk.Frame(dlg, bg=GUI_BG, padx=16, pady=12)
+    body.pack(fill="both", expand=True)
+    gui_label(body, "Run done.", font=F_BIG).pack(anchor="w")
+    gui_label(body, "Target files (.xeo, .run, flexImaging txt, csv, "
+                    "pictures) are in:", wraplength=px(460),
+              justify="left").pack(anchor="w", pady=(4, 0))
+    gui_small(body, str(folder) if folder else "RESULTS",
+              wraplength=px(460), justify="left").pack(anchor="w")
+    gui_button(body, "OK", dlg.destroy, width=8).pack(anchor="e",
+                                                       pady=(12, 0))
+    dlg.bind("<Return>", lambda _e: dlg.destroy())
+    dlg.transient(parent)
+    if folder is not None:
+        gui_open_folder(folder)
+
+
 def gui_review_window(master, folder: Path):
     """Pop-up with the review pictures: review.png (accepted beads and
     their shots) and review_zoom.png (close-up, every category), one at
@@ -4327,8 +4365,12 @@ def gui_pick_window(master, state: GuiState):
             bar_done()
             set_status(f"run stopped: {e}")
             return
-        set_status("run complete -- target files are in RESULTS "
-                   "(see the console for the summary)")
+        folders = sorted((HERE / cfg["output"].get("results-dir",
+                                                    "RESULTS")).glob("* run"),
+                         key=lambda p: p.stat().st_mtime)
+        folder = folders[-1] if folders else None
+        set_status(f"run done -- {folder.name if folder else 'RESULTS'}")
+        gui_run_done(win, folder)
 
     gui_button(bottom, "Save and run  >", lambda: save_and("run"),
                font=F_BIG).pack(side="right")
