@@ -1,0 +1,71 @@
+diff --git a/README.md b/README.md
+index 41c4ab8..cc2eb99 100644
+--- a/README.md
++++ b/README.md
+@@ -140,7 +140,8 @@ Methods:
+ | default | global threshold sweep (OpenCV blob detector) |
+ | quick | flat-field subtraction then connected components |
+ | strict | both, combined; then only the best-fitting 5 % of everything found is kept (size closest to nominal, then most isolated) |
+-| threshold | default, with the threshold step set on the slider under the dropdown (smaller steps find fainter beads and take longer; the slider is live only for this method) |
++| threshold | default, with the threshold step set on the slider under the dropdown (smaller steps find fainter beads and take longer; the slider is live only for this method and contrast) |
++| contrast | quick, with the slider as the flat-field threshold: how many grey levels darker than the local background a pixel must be to count as bead (CONFIG uses 6; raise it when beads are pale rings and quick reports them oversize or as clumps — 15 worked on such a scan) |
+ 
+ | colour | meaning |
+ |---|---|
+diff --git a/microMS_beadtargeting.py b/microMS_beadtargeting.py
+index b52efb4..6336340 100644
+--- a/microMS_beadtargeting.py
++++ b/microMS_beadtargeting.py
+@@ -3264,8 +3264,8 @@ def gui_detect_region(img, box, cfg: dict, method: str) -> list:
+ 
+     if method in ("default", "threshold"):
+         found = list(_detect_blobdetector(g, d))      # global threshold sweep
+-    elif method == "quick":
+-        found = list(_detect_flatfield(g, d))
++    elif method in ("quick", "contrast"):
++        found = list(_detect_flatfield(g, d))       # contrast: analyze() set d["threshold"]
+     else:
+         # strict: both detectors, objects combined (an object seen by
+         # both counts once); gui_refilter then keeps only the best few
+@@ -3885,15 +3885,17 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
+         v["method"].set("default")
+     elif v["flat_field"].get():
+         v["method"].set("quick")
+-    if v["method"].get() not in ("default", "quick", "strict", "threshold"):
++    if v["method"].get() not in ("default", "quick", "strict", "threshold",
++                                 "contrast"):
+         v["method"].set("default")          # a save made under the old names
+     gui_dropdown(side, v["method"],
+-                 ["default", "quick", "strict", "threshold"]).pack(
++                 ["default", "quick", "strict", "threshold", "contrast"]).pack(
+         anchor="w", pady=(2, 2), fill="x")
+     gui_small(side, "default   global threshold sweep\n"
+                     "quick      flat-field subtraction\n"
+                     "strict     both combined, keep the best 5 %\n"
+-                    "threshold  default, with the step set below",
++                    "threshold  default, with the step set below\n"
++                    "contrast   quick, slider = grey levels above background",
+               justify="left", anchor="w").pack(anchor="w", fill="x",
+                                                pady=(0, 4))
+     # threshold step slider: live only for the threshold method, so
+@@ -3911,7 +3913,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
+ 
+     def step_state(*_a) -> None:
+         if step_bar.winfo_exists():         # the trace outlives the window
+-            on = v["method"].get() == "threshold"
++            on = v["method"].get() in ("threshold", "contrast")
+             step_bar.config(state="normal" if on else "disabled",
+                             fg=GUI_TXT if on else GUI_DIM)
+             step_lbl.config(fg=GUI_TXT if on else GUI_DIM)
+@@ -4025,6 +4027,11 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
+         if method == "threshold":
+             cfg["detection"]["threshold-step"] = max(
+                 1, int(round(gui_float(v["threshold_step"], 10))))
++        elif method == "contrast":
++            # quick, with the slider as the flat-field threshold: how many
++            # grey levels above the local background count as bead
++            cfg["detection"]["threshold"] = max(
++                1, int(round(gui_float(v["threshold_step"], 10))))
+         found = gui_detect_region(state.img, box.box, cfg, method)
+         added = gui_merge(state, found, cfg)
+         state.boxes.append(tuple(box.box))

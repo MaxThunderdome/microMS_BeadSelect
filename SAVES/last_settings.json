@@ -7,7 +7,7 @@
  "global_sweep": true,
  "flat_field": false,
  "bead_um": "90",
- "bead_dev_um": "60",
+ "bead_dev_um": "30",
  "isolation_on": true,
  "isolation_um": "150",
  "max_points": "1000",

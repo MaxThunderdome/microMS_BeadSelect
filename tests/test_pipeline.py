@@ -967,3 +967,18 @@ class _Var:
 
     def get(self):
         return self.v
+
+
+def test_dark_only_drops_light_blobs():
+    """The sweep reports light blobs too (filterByColor is off); a glare
+    spot the size of a bead must not survive as a bead, a dark bead and
+    a hollow ring (pale centre, dark rim) must."""
+    cv2 = pytest.importorskip("cv2")
+    img = np.full((300, 300), 230, np.uint8)
+    cv2.circle(img, (60, 60), 7, 150, -1)               # solid dark bead
+    cv2.circle(img, (160, 60), 7, 195, 2)               # ring: dark rim only
+    cv2.circle(img, (60, 160), 7, 250, -1)              # light glare spot
+    g = cv2.bitwise_not(img)
+    found = [(60, 60, 14, False), (160, 60, 14, False), (60, 160, 14, False)]
+    kept = M.gui_dark_only(g, dict(M.CONFIG["detection"]), found)
+    assert [f[:2] for f in kept] == [(60, 60), (160, 60)]

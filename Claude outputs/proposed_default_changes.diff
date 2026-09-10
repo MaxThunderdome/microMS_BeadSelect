@@ -1,0 +1,76 @@
+--- microMS_beadtargeting.iso_only.py	2026-09-10 06:09:50.354517668 +0000
++++ microMS_beadtargeting.py	2026-09-10 06:09:50.370685425 +0000
+@@ -469,7 +469,7 @@
+         "background-kernel-px": 101,
+         "threshold": 6,
+         # blob only
+-        "threshold-step": 10,
++        "threshold-step": 5,
+ 
+         # Loose pre-filter in pixels, before the micron size filter.
+         # Generous on purpose: the isolation filter needs to see debris.
+@@ -3128,6 +3128,14 @@
+ GUI_BODY_FACTOR = 2.0
+ GUI_BODY_MARGIN_PX = 4
+ 
++# default / threshold / strict: the sweep also reports LIGHT blobs
++# (filterByColor is off so that inverted beads pass at all), and a
++# glare spot the size of a bead goes through as one. An object must be
++# at least this many grey levels darker than its surroundings, on
++# average over its disc. Light spots measure 0.0; the faintest real
++# bead seen so far 5.9.
++GUI_MIN_CONTRAST = 2
++
+ SAVES_DIR = HERE / "SAVES"
+ LAST_SETTINGS = SAVES_DIR / "last_settings.json"
+ 
+@@ -3272,13 +3280,14 @@
+         return found + list(extra)
+ 
+     if method in ("default", "threshold"):
+-        found = list(_detect_blobdetector(g, d))      # global threshold sweep
++        found = gui_dark_only(g, d, _detect_blobdetector(g, d))   # sweep
+     elif method in ("quick", "contrast"):
+         found = list(_detect_flatfield(g, d))       # contrast: analyze() set d["threshold"]
+     else:
+         # strict: both detectors, objects combined (an object seen by
+         # both counts once); gui_refilter then keeps only the best few
+-        found = add_new(list(_detect_flatfield(g, d)), _detect_blobdetector(g, d))
++        found = add_new(list(_detect_flatfield(g, d)),
++                        gui_dark_only(g, d, _detect_blobdetector(g, d)))
+ 
+     # Neighbour pass: clusters and debris wider than the size cap never
+     # reach the object list (the threshold sweep does not report them
+@@ -3306,6 +3315,32 @@
+     return beads
+ 
+ 
++def gui_dark_only(g, d: dict, found: list) -> list:
++    """Keep the objects of the threshold sweep that are darker than
++    their surroundings (see GUI_MIN_CONTRAST): mean of the flat-field
++    image over the measured disc, the measure _detect_flatfield
++    thresholds. Light blobs -- glare, bright specks -- drop out."""
++    import cv2
++    found = list(found)
++    if not found:
++        return found
++    k = int(d.get("background-kernel-px", 101))
++    if k % 2 == 0:
++        k += 1
++    sub = cv2.subtract(g, cv2.medianBlur(g, k))
++    out = []
++    for x, y, size, cl in found:
++        r = max(int(round(size / 2)), 1)
++        ix, iy = int(round(x)), int(round(y))
++        wx, wy = max(ix - r, 0), max(iy - r, 0)
++        win = sub[wy:iy + r + 1, wx:ix + r + 1]
++        disc = np.zeros(win.shape, np.uint8)
++        cv2.circle(disc, (ix - wx, iy - wy), r, 255, -1)
++        if cv2.mean(win, disc)[0] >= GUI_MIN_CONTRAST:
++            out.append((x, y, size, cl))
++    return out
++
++
+ def gui_clearance(g, d: dict, found: list, cap_px: float) -> list:
+     """
+     Distance, in pixels, from each object's centre to the nearest dark
