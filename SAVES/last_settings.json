@@ -1,5 +1,5 @@
 {
- "scan": "C:\\Users\\danpa\\Code_Docs\\microMS_BeadSelect\\230802_Dan Hexapeptide Lib036.tif",
+ "scan": "C:\\Users\\danpa\\Code_Docs\\microMS_BeadSelect\\slide01.tif",
  "image_type": "highres scanner",
  "microscope_slide": false,
  "microscope_zoom": "10",
@@ -12,6 +12,6 @@
  "isolation_um": "150",
  "max_points": "1000",
  "matrix": "yes",
- "method": "threshold",
+ "method": "default",
  "threshold_step": "19"
 }
