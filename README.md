@@ -113,7 +113,7 @@ the bead window.
 | v Image Settings v | drops down the microscope zoom and the provisional scale (µm/px) used by the isolation filter until fiducials exist |
 | Location of targets | preselects the bead-matching method (Global threshold sweep → default, flat field subtraction → quick) |
 | Average bead size + deviation | the size window; read the measured sizes off the bead window's info box and set this to match your beads |
-| Isolation window | `min-bead-separation`; untick to skip the isolation filter |
+| Bead isolation window (from the center) | `min-bead-separation`, measured from the bead centre to the nearest dark pixel of anything else — another bead, a cluster, a hair, a speck — not just to the nearest object centre (the console pipeline still compares centres); untick to skip the isolation filter |
 | Max number of points | cap on accepted beads (best size fit first, then most isolated) |
 | **Continue to bead selection** | loads the scan and opens the bead window |
 
@@ -146,7 +146,7 @@ Methods:
 |---|---|
 | green | accepted |
 | red | rejected: near a contaminant or another bead, outside the size window, or over the max number of points |
-| purple | a clump, or a bead rejected because a clump sits inside its isolation window |
+| purple | a clump, or a bead rejected because a clump — or its own dark footprint running into something larger than one bead — sits inside its isolation window |
 | blue, thick | manually overridden |
 
 The info box shows accepted / total, overrides, boxes analysed, and the

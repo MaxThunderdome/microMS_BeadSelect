@@ -894,3 +894,76 @@ def test_floats_in_extracts_coordinate_pairs():
     assert M._floats_in("x=86083.1 y=-20161.0") == ["86083.1", "-20161.0"]
     assert M._floats_in("1.2e3 -0.5") == ["1.2e3", "-0.5"]
     assert M._floats_in("no numbers here") == []
+
+
+# ---------------------------------------------------------------------
+# bead isolation window (from the centre): gui_clearance
+# ---------------------------------------------------------------------
+
+def _scan_with(objects):
+    """A flat 230-grey scan with dark discs / a dark line drawn on it,
+    inverted the way gui_detect_region feeds the detectors."""
+    cv2 = pytest.importorskip("cv2")
+    img = np.full((300, 300), 230, np.uint8)
+    for kind, *spec in objects:
+        if kind == "disc":
+            cv2.circle(img, (spec[0], spec[1]), spec[2], 150, -1)
+        else:
+            cv2.line(img, spec[0], spec[1], 150, 2)
+    return cv2.bitwise_not(img)
+
+
+def test_clearance_sees_hairs_and_touching_beads():
+    """The isolation filter compares object CENTRES, so a hair or a
+    touching neighbour passed as long as its centroid was far away.
+    gui_clearance measures to the nearest dark pixel that is not the
+    bead's own body: lone beads are clear, a hair is not, a touching
+    neighbour (same connected component) is not either."""
+    g = _scan_with([("disc", 60, 60, 7),                     # lone
+                    ("disc", 220, 60, 7),                    # lone
+                    ("disc", 60, 220, 7),                    # + hair 14 px off
+                    ("line", (40, 236), (80, 236)),
+                    ("disc", 220, 220, 7),                   # touching pair
+                    ("disc", 234, 220, 7)])
+    d = dict(M.CONFIG["detection"])
+    found = [(60, 60, 14, False), (220, 60, 14, False),
+             (60, 220, 14, False), (220, 220, 14, False)]
+    clear = M.gui_clearance(g, d, found, cap_px=60)
+    assert clear[0][0] == math.inf and clear[1][0] == math.inf
+    assert 14 <= clear[2][0] <= 16           # the hair: another component
+    body = M.GUI_BODY_FACTOR * 7 + M.GUI_BODY_MARGIN_PX
+    assert body <= clear[3][0] <= body + 1   # the neighbour: same component,
+    #                                          first pixel past the own body
+    # a clump is never accepted, so it gets no clearance at all
+    assert M.gui_clearance(g, d, [(60, 60, 14, True)], 60) == [(math.inf, False)]
+
+
+def test_refilter_uses_the_clearance():
+    """gui_refilter folds clear_px into nn_um so the native shape_filter
+    rejects with its own 'not isolated' reason; beads without a clearance
+    (an old save) are filtered exactly as before."""
+    beads = [M.Bead(100, 100, 12), M.Bead(500, 100, 12), M.Bead(900, 100, 12)]
+    beads[0].clear_px = 10.0                  # something dark 10 px away
+    beads[1].clear_px = math.inf              # nothing near
+    fids = M.gui_provisional_fiducials({"um_per_px": _Var("7.0")})
+    cfg = M.load_config()
+    cfg["fiducials"] = fids
+    cfg["bead-diameter"], cfg["min-bead-separation"] = 84, 150
+    T = M.to_microns(M.transform_from_config(cfg), cfg)
+    M.to_stage(beads, T)
+    M.isolation_filter(beads, 150)
+    for b in beads:                           # the lines gui_refilter adds
+        if hasattr(b, "clear_px"):
+            b.nn_um = min(b.nn_um, b.clear_px * T.um_per_px)
+    M.shape_filter(beads, cfg)
+    assert [b.accepted for b in beads] == [False, True, True]
+    assert beads[0].reject_category == "not isolated"
+    assert beads[0].nn_um == pytest.approx(70.0)
+
+
+class _Var:
+    def __init__(self, v):
+        self.v = v
+
+    def get(self):
+        return self.v

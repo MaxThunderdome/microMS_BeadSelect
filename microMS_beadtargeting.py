@@ -3119,6 +3119,15 @@ GUI_NO_EFFECT = ("image_type", "microscope_slide", "microscope_zoom",
 # best fit first (size closest to nominal, then most isolated)
 GUI_STRICT_KEEP = 0.05
 
+# bead isolation window: a bead's own dark footprint reaches
+# FACTOR x its measured radius + MARGIN px from its centre; anything
+# dark past that and inside the isolation window is a neighbour. A
+# scanner blurs a bead into a halo about twice the radius the detector
+# reports (89 lone beads on the 7 um/px scan: 95 % within 2.0 x, all
+# within 2.4 x); the margin covers the rest and the specks.
+GUI_BODY_FACTOR = 2.0
+GUI_BODY_MARGIN_PX = 4
+
 SAVES_DIR = HERE / "SAVES"
 LAST_SETTINGS = SAVES_DIR / "last_settings.json"
 
@@ -3282,7 +3291,86 @@ def gui_detect_region(img, box, cfg: dict, method: str) -> list:
     big = [(x, y, size, True) for x, y, size, cl in _detect_flatfield(g, wide)
            if size > float(d.get("max-diameter-px", 30)) or cl]
     found = add_new(found, big)
-    return [Bead(x + x0, y + y0, size, clumped=cl) for x, y, size, cl in found]
+    beads = [Bead(x + x0, y + y0, size, clumped=cl) for x, y, size, cl in found]
+
+    # Bead isolation window (from the centre): the isolation filter only
+    # knows object CENTRES, so a bead touching the edge of a cluster, or
+    # a hair, passed whenever that object's centroid was far enough away.
+    # Measure the clearance to the nearest dark pixel instead; gui_refilter
+    # folds it into nn_um so the native filters reject it. Only the
+    # window asks for it (clear-cap-px is set by analyze, not CONFIG).
+    if d.get("clear-cap-px"):
+        for b, (clear, clump) in zip(beads, gui_clearance(
+                g, d, found, float(d["clear-cap-px"]))):
+            b.clear_px, b.clear_clump = clear, clump
+    return beads
+
+
+def gui_clearance(g, d: dict, found: list, cap_px: float) -> list:
+    """
+    Distance, in pixels, from each object's centre to the nearest dark
+    pixel that is not the object's own body. Returns one
+    (clear_px, foreign_is_clump) per object; clumps get (inf, False)
+    because they are never accepted anyway.
+
+    "Dark" is the flat-field mask of _detect_flatfield, same recipe and
+    same thresholds, so hairs and clusters of any size count. The own
+    body is the mask component under the centre, out to GUI_BODY_FACTOR
+    measured radii + GUI_BODY_MARGIN_PX (the scanner's halo). Beyond
+    that, or in another component, every dark pixel is foreign -- a
+    touching neighbour is part of the same component but lies outside
+    the body. The search stops at cap_px: farther than that is inf,
+    i.e. clear.
+    """
+    import cv2
+    k = int(d.get("background-kernel-px", 101))
+    if k % 2 == 0:
+        k += 1
+    sub = cv2.subtract(g, cv2.medianBlur(g, k))
+    _, bw = cv2.threshold(sub, int(d.get("threshold", 6)), 255,
+                          cv2.THRESH_BINARY)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    _, lab, stats, _ = cv2.connectedComponentsWithStats(bw, 8)
+    # Specks below the detectors' own size floor are background.
+    a_min = math.pi * (float(d.get("min-diameter-px", 3)) / 2) ** 2
+    area = stats[:, cv2.CC_STAT_AREA]
+    drop = area < a_min
+    drop[0] = True
+    lab[drop[lab]] = 0
+    h, w = lab.shape
+    cap = int(math.ceil(cap_px))
+
+    out = []
+    for x, y, size, cl in found:
+        ix, iy = int(round(x)), int(round(y))
+        if cl or not (0 <= ix < w and 0 <= iy < h):
+            out.append((float("inf"), False))
+            continue
+        body_px = GUI_BODY_FACTOR * 0.5 * size + GUI_BODY_MARGIN_PX
+        one_bead = math.pi * body_px ** 2      # larger than this = clump
+        wx0, wy0 = max(ix - cap, 0), max(iy - cap, 0)
+        win = lab[wy0:min(iy + cap + 1, h), wx0:min(ix + cap + 1, w)]
+        ys, xs = np.nonzero(win)
+        if len(xs) == 0:
+            out.append((float("inf"), False))
+            continue
+        dist = np.hypot(xs + wx0 - x, ys + wy0 - y)
+        labs = win[ys, xs]
+        own = int(lab[iy, ix])
+        if own == 0:
+            # centre not dark (a pale or ring-shaped bead): take the
+            # nearest dark pixel inside the measured radius as the body
+            near = dist <= 0.5 * size
+            if near.any():
+                own = int(labs[near][np.argmin(dist[near])])
+        foreign = (labs != own) | (dist > body_px)
+        if not foreign.any():
+            out.append((float("inf"), False))
+            continue
+        j = int(np.argmin(np.where(foreign, dist, np.inf)))
+        out.append((float(dist[j]),
+                    bool(labs[j] == own or area[labs[j]] > one_bead)))
+    return out
 
 
 def gui_merge(state: GuiState, new: list, cfg: dict) -> int:
@@ -3313,6 +3401,10 @@ def gui_refilter(state: GuiState) -> dict:
     state.T = T
     to_stage(beads, T)
     isolation_filter(beads, float(cfg["min-bead-separation"]))
+    for b in beads:
+        # nearest dark pixel (gui_clearance), not just nearest centre
+        if hasattr(b, "clear_px"):
+            b.nn_um = min(b.nn_um, b.clear_px * T.um_per_px)
     shape_filter(beads, cfg)
     gui_mark_near_clump(beads, float(cfg["min-bead-separation"]))
     for b in beads:
@@ -3355,7 +3447,7 @@ def gui_mark_near_clump(beads: list, min_sep_um: float) -> None:
     tree = cKDTree(pts)
     for i, b in enumerate(beads):
         if b.reject_category == "not isolated":
-            b.near_clump = any(
+            b.near_clump = getattr(b, "clear_clump", False) or any(
                 beads[j].clumped
                 for j in tree.query_ball_point(pts[i], min_sep_um)
                 if j != i)
@@ -3382,10 +3474,15 @@ def gui_bead_colour(b) -> str:
 # ---- saves ----------------------------------------------------------------
 
 def gui_beads_to_json(beads: list) -> list:
-    return [{"x_px": round(b.x_px, 2), "y_px": round(b.y_px, 2),
+    rows = [{"x_px": round(b.x_px, 2), "y_px": round(b.y_px, 2),
              "diameter_px": round(b.diameter_px, 2),
              "clumped": bool(b.clumped), "manual": b.manual}
             for b in beads]
+    for b, row in zip(beads, rows):
+        if hasattr(b, "clear_px") and math.isfinite(b.clear_px):
+            row["clear_px"] = round(b.clear_px, 2)
+            row["clear_clump"] = bool(b.clear_clump)
+    return rows
 
 
 def gui_beads_from_json(rows: list) -> list:
@@ -3394,6 +3491,9 @@ def gui_beads_from_json(rows: list) -> list:
         b = Bead(float(r["x_px"]), float(r["y_px"]), float(r["diameter_px"]),
                  clumped=bool(r.get("clumped", False)))
         b.manual = str(r.get("manual", "") or "")
+        if r.get("clear_px") is not None:
+            b.clear_px = float(r["clear_px"])
+            b.clear_clump = bool(r.get("clear_clump", False))
         out.append(b)
     return out
 
@@ -3822,7 +3922,8 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     gui_small(f, "um").pack(side="left", padx=(3, 0))
 
     # -- isolation window ------------------------------------------------
-    f = line(widget=gui_check(body, v["isolation_on"], "Isolation window"))
+    f = line(widget=gui_check(body, v["isolation_on"],
+                              "Bead isolation window (from the center)"))
     gui_box(f, v["isolation_um"], 5).pack(side="left")
     gui_small(f, "um").pack(side="left", padx=(3, 0))
 
@@ -4025,6 +4126,10 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         if method == "threshold":
             cfg["detection"]["threshold-step"] = max(
                 1, int(round(gui_float(v["threshold_step"], 10))))
+        # how far gui_clearance looks, in px: 3 x the isolation window
+        cfg["detection"]["clear-cap-px"] = max(
+            3 * float(cfg["min-bead-separation"])
+            / gui_transform(state, cfg).um_per_px, 100)
         found = gui_detect_region(state.img, box.box, cfg, method)
         added = gui_merge(state, found, cfg)
         state.boxes.append(tuple(box.box))
