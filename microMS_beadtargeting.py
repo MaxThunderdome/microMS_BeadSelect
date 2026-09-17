@@ -3317,6 +3317,9 @@ GUI_DEFAULTS = {
     "method": "default",
     "threshold_step": "10",         # threshold method only; seeded from CONFIG
     "shot_pattern": "ring",         # seeded from CONFIG shot-placement
+    "acq_method": "",               # .run acqMethod; seeded from CONFIG
+    "run_directory": "",            # .run directory; seeded from CONFIG
+    "sample_name": "",              # .run sampleName; seeded from CONFIG
 }
 
 # stored with the save, no effect on detection yet (marked * in the window)
@@ -3387,6 +3390,10 @@ def gui_make_vars(master, cfg: dict) -> dict:
     v["isolation_um"].set(f"{float(cfg['min-bead-separation']):g}")
     v["threshold_step"].set(f"{int(cfg['detection']['threshold-step'])}")
     v["shot_pattern"].set(str(cfg["shot-placement"].get("shot-pattern", "ring")))
+    run_hdr = cfg["output"].get("run") or {}
+    v["acq_method"].set(str(run_hdr.get("acqMethod", "")))
+    v["run_directory"].set(str(run_hdr.get("directory", "")))
+    v["sample_name"].set(str(run_hdr.get("sampleName", "")))
     for k, val in gui_settings_load().items():
         if k == "scan" and not val:
             continue
@@ -3839,6 +3846,13 @@ def gui_run_cfg(state: GuiState, fids: list) -> dict:
     cfg = gui_size_limits_px(state,
                              gui_apply_params(copy.deepcopy(state.cfg), state.v))
     cfg["fiducials"] = [dict(f) for f in fids]
+    run_hdr = cfg["output"].setdefault("run", {})
+    if state.v["acq_method"].get().strip():
+        run_hdr["acqMethod"] = state.v["acq_method"].get().strip()
+    if state.v["run_directory"].get().strip():
+        run_hdr["directory"] = state.v["run_directory"].get().strip()
+    if state.v["sample_name"].get().strip():
+        run_hdr["sampleName"] = state.v["sample_name"].get().strip()
     if state.path is not None:
         cfg["input"]["scan"] = str(state.path)
     cfg["output"]["review-show"] = False
@@ -4087,7 +4101,6 @@ def gui_select_window(master, state: GuiState, on_continue=None):
                                                               padx=(8, 0))
 
     # -- type of image + drop-down image settings -----------------------
-    f = line("Type of image *")
     panel_open = [False]
 
     def set_panel(open_: bool):
@@ -4098,9 +4111,6 @@ def gui_select_window(master, state: GuiState, on_continue=None):
         else:
             panel.grid_remove()
             bar_btn.config(text="v   Image Settings   v")
-
-    gui_dropdown(f, v["image_type"],
-                 ["highres scanner", "beta"]).pack(side="left")
 
     r = row[0]
     bar_btn = tk.Button(body, text="v   Image Settings   v", font=F_SMALL,
@@ -4114,6 +4124,11 @@ def gui_select_window(master, state: GuiState, on_continue=None):
                      relief="sunken", bd=2)
     panel.grid(row=r, column=0, columnspan=2, sticky="ew")
     row[0] += 1
+    prow1 = tk.Frame(panel, bg=GUI_LAVENDER)
+    prow1.pack(anchor="w")
+    gui_label(prow1, "Type of image *", bg=GUI_LAVENDER).pack(side="left")
+    gui_dropdown(prow1, v["image_type"],
+                 ["highres scanner", "beta"]).pack(side="left", padx=(6, 0))
     prow2 = tk.Frame(panel, bg=GUI_LAVENDER)
     prow2.pack(anchor="w", pady=(4, 0))
     gui_label(prow2, "scale", bg=GUI_LAVENDER).pack(side="left")
@@ -4123,15 +4138,8 @@ def gui_select_window(master, state: GuiState, on_continue=None):
                          side="left")
     set_panel(False)
 
-    # -- location of targets --------------------------------------------
-    f = line("Location of targets")
-    gui_check(f, v["global_sweep"], "Global threshold sweep",
-              font=F_SMALL).pack(side="left")
-    gui_label(f, ";", font=F_SMALL).pack(side="left", padx=4)
-    gui_check(f, v["flat_field"], "flat field subtraction",
-              font=F_SMALL).pack(side="left")
-
     # -- bead size -------------------------------------------------------
+    bead_row = row[0]
     f = line("Average bead size + deviation")
     gui_box(f, v["bead_um"], 5).pack(side="left")
     gui_small(f, "um").pack(side="left", padx=(3, 10))
@@ -4150,14 +4158,17 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     gui_box(f, v["max_points"], 6).pack(side="left")
 
     # -- laser shot pattern ----------------------------------------------
-    f = line("Laser shot pattern")
-    pf = tk.Frame(f, bg=GUI_BG)
-    pf.pack(side="left")
-    p_fig, p_ax, p_canvas, p_w = gui_pattern_canvas(pf)
-    p_w.pack(anchor="w")
-    p_name = gui_small(pf, "")
+    # right of the bead size / isolation / max points rows
+    pf = tk.Frame(body, bg=GUI_BG)
+    pf.grid(row=bead_row, column=1, rowspan=3, sticky="ne", pady=4)
+    gui_label(pf, "Laser shot pattern").pack(anchor="w", pady=(0, 2))
+    p_fig, p_ax, p_canvas, p_w = gui_pattern_canvas(pf, GUI_PATTERN_IN / 2)
+    p_w.pack(side="left", anchor="w")
+    pinfo = tk.Frame(pf, bg=GUI_BG)
+    pinfo.pack(side="left", anchor="w", padx=(10, 0))
+    p_name = gui_small(pinfo, "")
     p_name.pack(anchor="w", pady=(2, 0))
-    gui_button(pf, "Laser shot pattern...",
+    gui_button(pinfo, "Laser shot pattern...",
                lambda: gui_pattern_dialog(win, v, state.cfg)).pack(
                    anchor="w", pady=(4, 0))
     pattern_names = {k: name for k, name, _ in GUI_PATTERNS}
@@ -4518,6 +4529,19 @@ def gui_pick_window(master, state: GuiState):
     def set_status(text: str) -> None:
         status.config(text=text)
 
+    # .run header paths, next to the save buttons; remembered in
+    # last_settings.json
+    runf = tk.Frame(bottom, bg=GUI_BG)
+    runf.pack(side="left", anchor="w")
+    for r, (lbl, key) in enumerate((("acqMethod", "acq_method"),
+                                    ("directory", "run_directory"),
+                                    ("sampleName", "sample_name"))):
+        gui_small(runf, lbl, anchor="w").grid(row=r, column=0, sticky="w")
+        e = gui_box(runf, state.v[key], 48)
+        e.grid(row=r, column=1, sticky="w", padx=4, pady=1)
+        e.bind("<FocusOut>", lambda _e: gui_settings_save(state.v))
+        e.bind("<Return>", lambda _e: gui_settings_save(state.v))
+
     main = tk.Frame(win, bg=GUI_BG)
     main.pack(fill="both", expand=True, padx=8, pady=(8, 0))
 
@@ -4529,14 +4553,12 @@ def gui_pick_window(master, state: GuiState):
     gui_label(side, "Fiducials", font=F_TITLE).pack(anchor="w")
     head = tk.Frame(side, bg=GUI_BG)
     head.pack(anchor="w", fill="x")
-    COLW = (12, 9, 9, 4, 2)                 # characters per column (rows)
-    HEADW = (15, 13, 13, 5, 2)              # same columns in the 8 pt font
+    COLW = (12, 9, 9, 4, 4, 2)              # characters per column (rows)
+    heads = []
     for c, h in enumerate(("#   pixel", "stage X (um)", "stage Y (um)",
-                           "hide", "")):
-        gui_small(head, h, width=HEADW[c], anchor="w").grid(
-            row=0, column=c, padx=2, sticky="w")
-    gui_small(side, "hidden = left out of the fit, not deleted",
-              fg="#3a3a3a").pack(anchor="w")
+                           "hide", "", "")):
+        heads.append(gui_small(head, h, anchor="w"))
+        heads[-1].grid(row=0, column=c, padx=2, sticky="w" if c < 3 else "")
 
     holder = tk.Frame(side, bg=GUI_BG, relief="sunken", bd=2)
     holder.pack(anchor="w", fill="both", pady=(2, 4))
@@ -4564,7 +4586,7 @@ def gui_pick_window(master, state: GuiState):
 
     rows: list = []
     marks: list = []
-    pending = {"px": None, "art": []}
+    pending = {"px": None, "art": [], "edit": None}
 
     def edit_row(i, key, var):
         try:
@@ -4591,13 +4613,18 @@ def gui_pick_window(master, state: GuiState):
             e.bind("<Return>", lambda _e, i=i, k=key + "_um", var=w[key]:
                    edit_row(i, k, var))
         w["hide"] = tk.BooleanVar(win, bool(f.get("hide")))
-        gui_check(table, w["hide"], pady=0,
+        gui_check(table, w["hide"], pady=0, padx=0,
                   command=lambda i=i, var=w["hide"]: toggle_hide(i, var)).grid(
-                      row=r, column=3, padx=6)
+                      row=r, column=3, padx=2)
+        tk.Button(table, text="edit", font=F_TINY_B, bg=GUI_BTN, fg=GUI_TXT,
+                  relief="raised", bd=1, width=4, padx=0, pady=0,
+                  highlightthickness=0,
+                  command=lambda i=i: start_edit(i)).grid(row=r, column=4,
+                                                          padx=2)
         tk.Button(table, text="x", font=F_TINY_B, bg=GUI_BTN, fg=GUI_TXT,
                   relief="raised", bd=1, width=2, padx=0, pady=0,
                   highlightthickness=0,
-                  command=lambda i=i: delete_fid(i)).grid(row=r, column=4,
+                  command=lambda i=i: delete_fid(i)).grid(row=r, column=5,
                                                           padx=2)
         rows.append(w)
 
@@ -4607,6 +4634,19 @@ def gui_pick_window(master, state: GuiState):
         rows.clear()
         for i, f in enumerate(state.fids):
             add_row(i, f)
+        # same pixel width per column in the header and the rows, so
+        # the labels sit over their boxes and checkboxes
+        table.update_idletasks()
+        for c, hl in enumerate(heads):
+            wd = hl.winfo_reqwidth() + 4
+            if rows:
+                wd = max(wd, table.grid_bbox(c, 0)[2])
+            head.grid_columnconfigure(c, minsize=wd)
+            table.grid_columnconfigure(c, minsize=wd)
+
+    def start_edit(i):
+        pending["edit"] = i
+        set_status(f"right-click the new pixel for fiducial {i}")
 
     def toggle_hide(i, var):
         state.fids[i]["hide"] = bool(var.get())
@@ -4618,7 +4658,6 @@ def gui_pick_window(master, state: GuiState):
         refit()
         set_status(f"removed fiducial {i}")
 
-    gui_small(side, "edit a value and press Enter to re-fit").pack(anchor="w")
     fit_label = gui_label(side, "", font=F_SMALL, wraplength=px(380),
                           justify="left", anchor="w")
     fit_label.pack(anchor="w", fill="x", pady=(2, 8))
@@ -4704,8 +4743,7 @@ def gui_pick_window(master, state: GuiState):
             worst = active[int(np.argmax(res))]
             text = (f"{len(active)} fiducials | RMS "
                     f"{np.sqrt((res ** 2).mean()):.1f} um | worst "
-                    f"{res.max():.1f} um | {T.um_per_px:.3f} um/px"
-                    + (" | REFLECTED" if T.reflected else ""))
+                    f"{res.max():.1f} um")
         fit_label.config(text=text)
         for i, f in enumerate(state.fids):
             if f.get("hide"):
@@ -4737,6 +4775,15 @@ def gui_pick_window(master, state: GuiState):
 
     def on_click(ev):
         if ev.inaxes is not ax or ev.button != 3 or ev.xdata is None:
+            return
+        i = pending["edit"]
+        if i is not None and i < len(state.fids):
+            pending["edit"] = None
+            state.fids[i]["x_px"] = float(ev.xdata)
+            state.fids[i]["y_px"] = float(ev.ydata)
+            rebuild_table()
+            refit()
+            set_status(f"fiducial {i} moved to ({ev.xdata:.0f}, {ev.ydata:.0f})")
             return
         set_pending((float(ev.xdata), float(ev.ydata)))
         set_status(f"pending pixel ({ev.xdata:.0f}, {ev.ydata:.0f})"
@@ -4785,6 +4832,7 @@ def gui_pick_window(master, state: GuiState):
                        "not count)")
             return
         save_fiducials(active)
+        gui_settings_save(state.v)
         say(f"Wrote {len(active)} fiducials to {CONFIG_PATH.name}")
         if not any(b.accepted for b in state.beads):
             set_status(f"fiducials saved; no beads selected -- go back to "
