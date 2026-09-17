@@ -1,5 +1,5 @@
 # microMS_beadtargeting
-
+pip install -r requirements.txt
 Dependencies (Python 3.10 or newer):
 ```bash
 pip install "numpy>=1.24" "scipy>=1.10" "opencv-python>=4.8" "matplotlib>=3.7"
