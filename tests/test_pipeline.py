@@ -982,3 +982,81 @@ def test_dark_only_drops_light_blobs():
     found = [(60, 60, 14, False), (160, 60, 14, False), (60, 160, 14, False)]
     kept = M.gui_dark_only(g, dict(M.CONFIG["detection"]), found)
     assert [f[:2] for f in kept] == [(60, 60), (160, 60)]
+
+
+# ---------------------------------------------------------------------
+# laser shot patterns
+# ---------------------------------------------------------------------
+
+def _one_bead(diameter_um=90.0, x=1000.0, y=-2000.0):
+    return M.Bead(100.0, 100.0, 12.0, x, y, diameter_um, accepted=True)
+
+
+def test_ring_pattern_is_the_original_placement(cfg):
+    """`ring` is the default and must place exactly what place_shots
+    always placed: circular_pack's angles at shot_radius."""
+    assert cfg["shot-placement"]["shot-pattern"] == "ring"
+    b = _one_bead()
+    shots = M.place_shots([b], cfg)
+    assert [s.angle_deg for s in shots] == M.circular_pack(45.0, cfg)
+    R = M.shot_radius(b, cfg)
+    for s in shots:
+        assert math.hypot(s.x_um - b.x_um, s.y_um - b.y_um) == pytest.approx(R)
+        assert not s.dropped
+
+
+def test_center_pattern_is_one_live_shot_on_the_centroid(cfg):
+    """One shot on the centroid, and the own-bead crater check is
+    skipped for it on purpose -- hitting the bead is the point."""
+    cfg["shot-placement"]["shot-pattern"] = "center"
+    b = _one_bead()
+    shots = M.place_shots([b], cfg)
+    assert len(shots) == 1
+    assert (shots[0].x_um, shots[0].y_um) == (b.x_um, b.y_um)
+    assert (shots[0].x_px, shots[0].y_px) == (b.x_px, b.y_px)
+    assert not shots[0].dropped
+
+
+@pytest.mark.parametrize("pattern", ["two-rings", "two-rings-12",
+                                     "dense-ring", "dense-two-rings"])
+@pytest.mark.parametrize("diameter", [60.0, 90.0, 120.0])
+def test_extra_patterns_add_shots_without_crater_overlap(cfg, pattern,
+                                                         diameter):
+    """Every added ring keeps ring 1 as it was and passes the existing
+    crater checks untouched: nothing dropped, every live pair at least
+    a crater width apart."""
+    cfg["shot-placement"]["shot-pattern"] = pattern
+    b = _one_bead(diameter)
+    shots = M.place_shots([b], cfg)
+    ring1 = M.circular_pack(diameter / 2.0, cfg)
+    R1 = M.shot_radius(b, cfg)
+    crater = M.footprint_um(cfg)
+    if not pattern.startswith("dense"):
+        assert [s.angle_deg for s in shots[:len(ring1)]] == ring1
+    assert len(shots) > len(ring1)
+    assert not any(s.dropped for s in shots)
+    radii = {round(math.hypot(s.x_um - b.x_um, s.y_um - b.y_um), 6)
+             for s in shots}
+    assert min(radii) == pytest.approx(R1)
+    if "two" in pattern:
+        assert max(radii) == pytest.approx(
+            R1 + cfg["shot-placement"]["ring2-offset-um"])
+    for i, p in enumerate(shots):
+        for q in shots[i + 1:]:
+            assert math.hypot(p.x_um - q.x_um, p.y_um - q.y_um) >= crater
+
+
+def test_two_rings_12_fixes_the_second_ring_count(cfg):
+    cfg["shot-placement"]["shot-pattern"] = "two-rings-12"
+    b = _one_bead()
+    shots = M.place_shots([b], cfg)
+    assert len(shots) == len(M.circular_pack(45.0, cfg)) + 12
+
+
+def test_pattern_rides_along_in_the_window_settings():
+    """The parameters window stores the choice with every other value,
+    so last_settings.json and the SAVES json carry it."""
+    assert M.GUI_DEFAULTS["shot_pattern"] == "ring"
+    assert [k for k, _, _ in M.GUI_PATTERNS] == [
+        "ring", "two-rings", "two-rings-12", "dense-ring",
+        "dense-two-rings", "center"]

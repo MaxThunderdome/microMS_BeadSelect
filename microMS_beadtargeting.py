@@ -403,6 +403,25 @@ CONFIG = {
         "max-spots": 12,
         "spot-spacing": 60,
         "rotation-offset-deg": 0.0,
+
+        # Shot pattern, picked with "Laser shot pattern..." in the
+        # parameters window. The ring described above is ring 1 of
+        # every pattern; the others add to it, none changes it.
+        #
+        # "ring"             ring 1 only (the original behaviour)
+        # "two-rings"        ring 1 plus a second ring ring2-offset-um
+        #                    further out, its count from the same
+        #                    spacing rule at that radius, staggered
+        #                    half a step
+        # "two-rings-12"     as two-rings, ring 2 fixed at ring2-spots
+        # "dense-ring"       ring 1 packed at the crater width, so the
+        #                    craters touch and none overlaps
+        # "dense-two-rings"  both rings packed at the crater width
+        # "center"           one shot on the bead centre; the own-bead
+        #                    crater check is skipped for it on purpose
+        "shot-pattern": "ring",
+        "ring2-offset-um": 30,
+        "ring2-spots": 12,
     },
 
     # Laser footprint. Affects ONLY the crater-overlap check; it moves
@@ -1252,10 +1271,72 @@ def shot_radius(bead: Bead, cfg: dict) -> float:
     return r + float(sp["edge-offset"])
 
 
+def pattern_rings(bead: Bead, cfg: dict, R1: float,
+                  angles1: list[float]) -> list[tuple[float, list[float]]]:
+    """
+    (radius, angles) of every ring the chosen shot-pattern places on
+    one bead. Ring 1 is passed in exactly as place_shots always built
+    it and is returned unchanged; the other patterns only add to it.
+
+    Ring 2 sits ring2-offset-um further out. Its count comes from
+    circular_pack at that radius (two-rings) or from ring2-spots
+    (two-rings-12). A dense ring holds as many shots as fit with every
+    crater clear of the next: the chord between neighbours, which is
+    what the crater check measures, must reach the crater width
+    (circular_pack spaces along the arc, whose chord falls short).
+    A second ring is rotated so that none of its shots lands radially
+    behind a ring-1 shot: by half of 360 / lcm(n1, n2), the smallest
+    angle by which shots of the two rings can differ, which is the
+    rotation that keeps every ring-2 shot as far as possible from the
+    ring-1 shot nearest to it.
+    """
+    sp = cfg["shot-placement"]
+    pattern = sp.get("shot-pattern", "ring")
+    if pattern == "center":
+        return [(0.0, [0.0])]
+    if pattern not in ("two-rings", "two-rings-12",
+                       "dense-ring", "dense-two-rings"):
+        return [(R1, angles1)]
+    offset = float(sp.get("edge-offset", 15))
+    rot = float(sp.get("rotation-offset-deg", 0.0))
+    R2 = R1 + float(sp.get("ring2-offset-um", 30))
+
+    def packed(R: float, extra_rot: float) -> list[float]:
+        # circular_pack works from the bead radius and adds the edge
+        # offset itself, so hand it the ring radius less the offset.
+        d = dict(cfg)
+        d["shot-placement"] = dict(sp, **{"rotation-offset-deg": rot + extra_rot})
+        return circular_pack(R - offset, d)
+
+    def dense(R: float, extra_rot: float) -> list[float]:
+        n = int(math.floor(math.pi / math.asin(min(1.0, crater / (2.0 * R)))))
+        n = max(n, 1)
+        return [rot + extra_rot + 360.0 * k / n for k in range(n)]
+
+    def stagger(n1: int, n2: int) -> float:
+        return 180.0 / (n1 * n2 // math.gcd(n1, n2))
+
+    if pattern == "two-rings":
+        n2 = len(packed(R2, 0.0))
+        return [(R1, angles1), (R2, packed(R2, stagger(len(angles1), n2)))]
+    if pattern == "two-rings-12":
+        n2 = max(int(sp.get("ring2-spots", 12)), 1)
+        st = rot + stagger(len(angles1), n2)
+        return [(R1, angles1),
+                (R2, [st + 360.0 * k / n2 for k in range(n2)])]
+    crater = footprint_um(cfg)
+    dense1 = dense(R1, 0.0)
+    if pattern == "dense-ring":
+        return [(R1, dense1)]
+    n2 = len(dense(R2, 0.0))
+    return [(R1, dense1), (R2, dense(R2, stagger(len(dense1), n2)))]
+
+
 def place_shots(beads: list[Bead], cfg: dict,
                 T: "Transform | None" = None) -> list[Shot]:
     fixed_angles = [float(a) for a in cfg["laser-shot-angles"]]
     dynamic = cfg["shot-placement"].get("dynamic-spots", False)
+    pattern = cfg["shot-placement"].get("shot-pattern", "ring")
     T_um_per_px = T.um_per_px if T is not None else 0.0
     crater = footprint_um(cfg)
     enforce = cfg.get("enforce-bead-clearance", True)
@@ -1273,8 +1354,11 @@ def place_shots(beads: list[Bead], cfg: dict,
         # simpler alternative.
         angles = (circular_pack(b.diameter_um / 2.0, cfg) if dynamic
                   else fixed_angles)
+        # "ring" is exactly the (R, angles) above; the other patterns
+        # add a ring or replace the set with the centre shot.
+        rings = pattern_rings(b, cfg, R, angles)
         ring: list[Shot] = []
-        for a in angles:
+        for R, a in [(R_, a_) for R_, angs in rings for a_ in angs]:
             rad = math.radians(a)
             # Pixel position too: microMS's PositionName convention
             # encodes it, which is how its loadXEO reads the file back.
@@ -1288,7 +1372,8 @@ def place_shots(beads: list[Bead], cfg: dict,
             # No software travel-limit check. The stage enforces its
             # own limits in hardware; a guessed coordinate window here
             # silently discarded entire target lists.
-            if enforce and (R - crater / 2.0) < (b.diameter_um / 2.0):
+            if enforce and pattern != "center" \
+                    and (R - crater / 2.0) < (b.diameter_um / 2.0):
                 s.dropped, s.drop_reason = True, "crater overlaps own bead"
 
             elif enforce and tree is not None:
@@ -3091,6 +3176,128 @@ def gui_load_scan(path: Path):
     return img
 
 
+# ---- laser shot pattern pictures ----------------------------------------
+
+# the patterns, in the order the "Laser shot pattern..." tiles show
+# them: CONFIG value, tile name, one-line description
+GUI_PATTERNS = [
+    ("ring", "Ring", "one ring just off the edge (original)"),
+    ("two-rings", "Two rings", "a second ring further out, same spacing rule"),
+    ("two-rings-12", "Two rings, 12", "second ring fixed at 12 shots"),
+    ("dense-ring", "Dense ring", "one ring, craters touching"),
+    ("dense-two-rings", "Dense two rings", "both rings, craters touching"),
+    ("center", "Center", "one shot on the bead centre"),
+]
+GUI_PATTERN_IN = 2.0        # side of a pattern picture, inches
+
+
+def gui_pattern_canvas(parent, size_in: float = GUI_PATTERN_IN):
+    """A square matplotlib figure, `size_in` inches a side, embedded
+    in tk. Returns (fig, ax, canvas, widget)."""
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    fig = Figure(figsize=(size_in, size_in), dpi=int(round(96 * GUI_SCALE)),
+                 facecolor=GUI_BOX)
+    ax = fig.add_axes([0.02, 0.02, 0.96, 0.96])
+    ax.set_axis_off()
+    canvas = FigureCanvasTkAgg(fig, master=parent)
+    w = canvas.get_tk_widget()
+    w.config(bg=GUI_BOX, highlightthickness=0, relief="sunken", bd=2)
+    return fig, ax, canvas, w
+
+
+def gui_pattern_draw(ax, pattern: str, bead_um: float, cfg: dict) -> int:
+    """One bead of `bead_um` and the shots `pattern` puts on it, placed
+    by place_shots itself so the picture is what run() will fire. A
+    shot the crater checks drop is drawn hollow. Returns the number of
+    live shots."""
+    from matplotlib.patches import Circle
+    c = dict(cfg)
+    c["shot-placement"] = dict(cfg["shot-placement"], **{"shot-pattern": pattern})
+    bead = Bead(0.0, 0.0, 0.0, 0.0, 0.0, float(bead_um), accepted=True)
+    shots = place_shots([bead], c)
+    r = float(bead_um) / 2.0
+    crater = footprint_um(c)
+    ax.clear()
+    ax.set_axis_off()
+    ax.add_patch(Circle((0.0, 0.0), r, fc="#505050", ec="black", lw=1))
+    reach = r
+    for s in shots:
+        reach = max(reach, math.hypot(s.x_um, s.y_um) + crater / 2.0)
+        if s.dropped:
+            ax.add_patch(Circle((s.x_um, s.y_um), crater / 2.0, fill=False,
+                                ec="#d62728", ls=":", lw=1))
+        else:
+            ax.add_patch(Circle((s.x_um, s.y_um), crater / 2.0, fc="#d62728",
+                                ec="none", alpha=0.85))
+            ax.plot(s.x_um, s.y_um, "+", color="white", ms=4, mew=0.8)
+    lim = reach * 1.08
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_aspect("equal")
+    return sum(not s.dropped for s in shots)
+
+
+def gui_pattern_dialog(parent, v: dict, cfg: dict) -> None:
+    """Tiles of every laser shot pattern for the bead size in the
+    parameters window. Clicking a tile selects it and closes the box;
+    the parameters window's own picture follows the variable."""
+    dlg = tk.Toplevel(parent, bg=GUI_BG)
+    dlg.title("Laser shot pattern")
+    dlg.resizable(False, False)
+    gui_title_strip(dlg, "Laser shot pattern -- click one")
+    body = tk.Frame(dlg, bg=GUI_BG, padx=14, pady=10)
+    body.pack(fill="both", expand=True)
+    bead_um = gui_float(v["bead_um"], float(cfg["bead-diameter"]))
+    current = v["shot_pattern"].get()
+
+    def choose(key: str):
+        v["shot_pattern"].set(key)
+        dlg.destroy()
+
+    for i, (key, name, desc) in enumerate(GUI_PATTERNS):
+        chosen = key == current
+        bg = GUI_NAVY if chosen else GUI_BG
+        cell = tk.Frame(body, bg=bg, padx=4, pady=4)
+        cell.grid(row=i // 3, column=i % 3, padx=6, pady=6)
+        fig, ax, canvas, w = gui_pattern_canvas(cell)
+        n = gui_pattern_draw(ax, key, bead_um, cfg)
+        canvas.draw()
+        w.pack()
+        title = gui_label(cell, f"{name}  ({n} shots)", bg=bg,
+                          fg=GUI_WHITE if chosen else GUI_TXT)
+        title.pack(anchor="w", pady=(3, 0))
+        note = gui_small(cell, desc, bg=bg,
+                         fg=GUI_WHITE if chosen else "#3a3a3a")
+        note.pack(anchor="w")
+        for widget in (cell, w, title, note):
+            widget.config(cursor="hand2")
+            widget.bind("<Button-1>", lambda _e, k=key: choose(k), add="+")
+
+    bf = tk.Frame(body, bg=GUI_BG)
+    bf.grid(row=2, column=0, columnspan=3, sticky="e", pady=(8, 0))
+    gui_small(bf, f"drawn for a {bead_um:g} um bead; hollow = dropped by "
+                  f"the crater checks").pack(side="left", padx=(0, 12))
+    gui_button(bf, "Cancel", dlg.destroy, width=8).pack(side="left")
+    dlg.bind("<Escape>", lambda _e: dlg.destroy())
+    dlg.transient(parent)
+    dlg.update_idletasks()
+    dlg.update()
+
+    def try_grab(attempt=0):
+        if not dlg.winfo_exists():
+            return
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            if attempt < 20:
+                dlg.after(50, try_grab, attempt + 1)
+
+    try_grab()
+    dlg.focus_force()
+    parent.wait_window(dlg)
+
+
 # ---- parameters, defaults and remembered values ----------------------
 
 GUI_DEFAULTS = {
@@ -3109,6 +3316,7 @@ GUI_DEFAULTS = {
     "matrix": "yes",
     "method": "default",
     "threshold_step": "10",         # threshold method only; seeded from CONFIG
+    "shot_pattern": "ring",         # seeded from CONFIG shot-placement
 }
 
 # stored with the save, no effect on detection yet (marked * in the window)
@@ -3178,6 +3386,7 @@ def gui_make_vars(master, cfg: dict) -> dict:
     v["bead_um"].set(f"{float(cfg['bead-diameter']):g}")
     v["isolation_um"].set(f"{float(cfg['min-bead-separation']):g}")
     v["threshold_step"].set(f"{int(cfg['detection']['threshold-step'])}")
+    v["shot_pattern"].set(str(cfg["shot-placement"].get("shot-pattern", "ring")))
     for k, val in gui_settings_load().items():
         if k == "scan" and not val:
             continue
@@ -3212,6 +3421,7 @@ def gui_apply_params(cfg: dict, v: dict) -> dict:
                                   else "flatfield")
     cfg["gui-max-points"] = int(gui_float(v["max_points"], 1000))
     cfg["gui-method"] = v["method"].get()
+    cfg["shot-placement"]["shot-pattern"] = v["shot_pattern"].get()
     return cfg
 
 
@@ -3876,9 +4086,8 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     gui_small(f, ".jpg is offered for .tif conversion").pack(side="left",
                                                               padx=(8, 0))
 
-    # -- type of image, matrix + drop-down image settings ---------------
+    # -- type of image + drop-down image settings -----------------------
     f = line("Type of image *")
-    zoom_check = [None]
     panel_open = [False]
 
     def set_panel(open_: bool):
@@ -3890,20 +4099,8 @@ def gui_select_window(master, state: GuiState, on_continue=None):
             panel.grid_remove()
             bar_btn.config(text="v   Image Settings   v")
 
-    def on_type(*_a):
-        if v["image_type"].get() == "Microscope":
-            set_panel(True)
-            zoom_check[0].config(state="normal", fg=GUI_TXT)
-            v["microscope_slide"].set(True)
-        else:
-            zoom_check[0].config(state="disabled")
-            v["microscope_slide"].set(False)
-
     gui_dropdown(f, v["image_type"],
-                 ["Microscope", "highres scanner", "beta"],
-                 on_type).pack(side="left")
-    gui_label(f, "Matrix *").pack(side="left", padx=(18, 6))
-    gui_dropdown(f, v["matrix"], ["yes", "no", "beta"]).pack(side="left")
+                 ["highres scanner", "beta"]).pack(side="left")
 
     r = row[0]
     bar_btn = tk.Button(body, text="v   Image Settings   v", font=F_SMALL,
@@ -3917,19 +4114,6 @@ def gui_select_window(master, state: GuiState, on_continue=None):
                      relief="sunken", bd=2)
     panel.grid(row=r, column=0, columnspan=2, sticky="ew")
     row[0] += 1
-    prow = tk.Frame(panel, bg=GUI_LAVENDER)
-    prow.pack(anchor="w")
-    zoom_check[0] = gui_check(prow, v["microscope_slide"],
-                              "microscope zoom *", bg=GUI_LAVENDER,
-                              state="disabled")
-    zoom_check[0].pack(side="left")
-    gui_box(prow, v["microscope_zoom"], width=4).pack(side="left",
-                                                       padx=(6, 4))
-    zoom_hint = gui_small(prow, "(10x)", bg=GUI_LAVENDER)
-    zoom_hint.pack(side="left")
-    v["microscope_zoom"].trace_add(
-        "write", lambda *_a: zoom_hint.config(
-            text=f"({v['microscope_zoom'].get() or '?'}x)"))
     prow2 = tk.Frame(panel, bg=GUI_LAVENDER)
     prow2.pack(anchor="w", pady=(4, 0))
     gui_label(prow2, "scale", bg=GUI_LAVENDER).pack(side="left")
@@ -3938,7 +4122,6 @@ def gui_select_window(master, state: GuiState, on_continue=None):
                      "fiducials are picked", bg=GUI_LAVENDER).pack(
                          side="left")
     set_panel(False)
-    on_type()
 
     # -- location of targets --------------------------------------------
     f = line("Location of targets")
@@ -3965,6 +4148,34 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     # -- max points ------------------------------------------------------
     f = line("Max number of points")
     gui_box(f, v["max_points"], 6).pack(side="left")
+
+    # -- laser shot pattern ----------------------------------------------
+    f = line("Laser shot pattern")
+    pf = tk.Frame(f, bg=GUI_BG)
+    pf.pack(side="left")
+    p_fig, p_ax, p_canvas, p_w = gui_pattern_canvas(pf)
+    p_w.pack(anchor="w")
+    p_name = gui_small(pf, "")
+    p_name.pack(anchor="w", pady=(2, 0))
+    gui_button(pf, "Laser shot pattern...",
+               lambda: gui_pattern_dialog(win, v, state.cfg)).pack(
+                   anchor="w", pady=(4, 0))
+    pattern_names = {k: name for k, name, _ in GUI_PATTERNS}
+
+    def redraw_pattern(*_a):
+        key = v["shot_pattern"].get()
+        if key not in pattern_names:
+            key = "ring"
+        n = gui_pattern_draw(p_ax, key,
+                             gui_float(v["bead_um"],
+                                       float(state.cfg["bead-diameter"])),
+                             state.cfg)
+        p_canvas.draw_idle()
+        p_name.config(text=f"{pattern_names[key]}: {n} shots per bead")
+
+    v["shot_pattern"].trace_add("write", redraw_pattern)
+    v["bead_um"].trace_add("write", redraw_pattern)
+    redraw_pattern()
 
     # -- footnote + continue -----------------------------------------------
     gui_hrule(body).grid(row=row[0], column=0, columnspan=2, sticky="ew",

@@ -11,8 +11,8 @@ dependencies = [
 ]
 
 # Deliberately a single script, not a package. Configuration is the
-# CONFIG dict at the top of that file. See CLAUDE.md before
-# restructuring.
+# CONFIG dict at the top of that file. See the Outline section of
+# README.md before restructuring.
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]

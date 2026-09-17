@@ -1,10 +1,11 @@
 # microMS_beadtargeting
 
-Dependencies: 
+Dependencies (Python 3.10 or newer):
 ```bash
 pip install "numpy>=1.24" "scipy>=1.10" "opencv-python>=4.8" "matplotlib>=3.7"
 ```
 tkinter (the windows) ships with python.org Python on Windows.
+The test suite (`tests/test_pipeline.py`) additionally needs `pip install pytest`; run `pytest` from the repository folder.
 
 ---
 ```bash
@@ -109,12 +110,13 @@ the bead window.
 | control | effect |
 |---|---|
 | **Upload image...** | choose the scan. A .jpg/.png is offered for conversion to .tif (Yes / Exit); the .tif is written next to the original and used as the slide image |
-| Type of image, Matrix | recorded with the save (no effect on detection yet, marked `*`) |
-| v Image Settings v | drops down the microscope zoom and the provisional scale (µm/px) used by the isolation filter until fiducials exist |
+| Type of image | recorded with the save (no effect on detection yet, marked `*`) |
+| v Image Settings v | drops down the provisional scale (µm/px) used by the isolation filter until fiducials exist |
 | Location of targets | preselects the bead-matching method (Global threshold sweep → default, flat field subtraction → quick) |
 | Average bead size + deviation | the size window; read the measured sizes off the bead window's info box and set this to match your beads |
 | Bead isolation window (from the center) | `min-bead-separation`, measured from the bead centre to the nearest dark pixel of anything else — another bead, a cluster, a hair, a speck — not just to the nearest object centre (the console pipeline still compares centres); untick to skip the isolation filter |
 | Max number of points | cap on accepted beads (best size fit first, then most isolated) |
+| Laser shot pattern | the picture shows the shots the current pattern puts on a bead of the size entered above, drawn by the pipeline's own placement; **Laser shot pattern...** opens tiles of all six — click one to choose. `ring` is the original placement; `two-rings` / `two-rings-12` add a second ring `ring2-offset-um` further out (count from the spacing rule, or fixed at `ring2-spots`); `dense-ring` / `dense-two-rings` pack the ring(s) at the crater width so craters touch without overlapping; `center` fires one shot on the bead centre (the own-bead crater check is skipped for it). Stored as `shot-placement.shot-pattern` |
 | **Continue to bead selection** | loads the scan and opens the bead window |
 
 ## 2. Bead selection window
@@ -245,7 +247,10 @@ The pipeline, in this order:
    dust and let the bead falsely pass.
 4. **Size filter** on what survives.
 5. **Manual overrides** from `manual_selection.csv`, if present.
-6. **Shot placement**, one per angle in `laser-shot-angles`.
+6. **Shot placement**, one per angle in `laser-shot-angles` (or the
+   `circular_pack` count with `dynamic-spots`); `shot-placement.shot-pattern`
+   adds a second ring, packs the ring(s) at the crater width, or replaces
+   them with one shot on the centre — see the parameters-window table.
 7. **Validation** — crater vs. own bead, crater vs. neighbouring
    object, crater vs. adjacent shot.
 8. **Serpentine ordering** and export.

@@ -10,30 +10,40 @@
 numpy>=1.24            # tested 2.4.4   -- arrays, Umeyama fit
 scipy>=1.10            # tested 1.17.1  -- cKDTree nearest-neighbour
 
-# Required for every command except 'check'.
+# Required for every command: the windows open the scan with it and
+# every command detects on it (only a console review/run fed from a
+# beads CSV with no scan on disk gets by without it).
 opencv-python>=4.8     # tested 4.13.0  -- image read/write, detection,
                        #                   distance transform, zoom render
 
-# Required for 'pick' and 'select', and for writing the QC overlay.
+# Required for every command: the windows embed a matplotlib canvas,
+# review draws review.png, and run's .xeo export goes through the
+# vendored microMS mapper, which imports matplotlib.
 matplotlib>=3.7        # tested 3.10.8  -- interactive windows, overlay
 
 
 # ---------------------------------------------------------------------
 # Which command needs what
 #
-#   convert   numpy, opencv
-#   pick      numpy, opencv, matplotlib
-#   select    all four
-#   check     numpy                    (no image is opened)
-#   run       all four, unless output overlay and zoom are both off,
-#             in which case matplotlib is not needed
-#   selftest  numpy, scipy, opencv
+#   gui, select   all four  (tkinter windows with an embedded matplotlib
+#                           canvas; opencv reads the scan and detects)
+#   pick          all four  (same windows; the scan is opened with opencv)
+#   review        all four  (opencv reads the scan, matplotlib draws
+#                           review.png and review_zoom.png)
+#   run           all four  (as review, plus the .xeo export goes through
+#                           the vendored microMS mapper, which imports
+#                           matplotlib even with overlay and zoom off)
+#
+# numpy and scipy are imported as soon as the script starts, so nothing
+# runs without them, not even the usage text.
+#
+# The test suite needs pytest as well:  pip install pytest
 #
 # Python 3.10 or newer. The source uses PEP 604 unions (X | None) and
 # PEP 585 generics (list[dict]) without a __future__ guard on the
 # dataclass annotations.
 #
 # opencv-python-headless is a drop-in substitute on a machine with no
-# display, but 'pick' and 'select' need a display anyway, so prefer
+# display, but 'gui', 'select' and 'pick' need a display anyway, so prefer
 # the full package on the workstation you actually click on.
 # ---------------------------------------------------------------------

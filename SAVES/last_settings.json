@@ -13,5 +13,6 @@
  "max_points": "1000",
  "matrix": "yes",
  "method": "default",
- "threshold_step": "19"
+ "threshold_step": "19",
+ "shot_pattern": "center"
 }
