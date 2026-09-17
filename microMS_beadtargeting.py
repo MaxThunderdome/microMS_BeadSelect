@@ -1660,6 +1660,93 @@ def fit_mtp(cfg: dict) -> Transform | None:
     return M
 
 
+def _flex_mapper():
+    """
+    timsTOF fleX coordinate mapper -- formerly flex_mapper.py, carried
+    in unchanged so the tool is one script. microMS's brukerMapper is
+    imported only when a .xeo is written.
+
+    A concrete implementation of microMS's `brukerMapper` abstract base
+    class, so `.xeo` files are written by microMS's own `writeXEO`.
+    microMS is MIT licensed, copyright (c) 2016 troycomi. See
+    microms/LICENSE.
+    """
+    import os
+    import types
+
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    if os.path.join(HERE, "microms") not in sys.path:
+        sys.path.insert(0, os.path.join(HERE, "microms"))
+
+    from CoordinateMappers import brukerMapper      # noqa: E402
+    from ImageUtilities import blob                 # noqa: E402
+
+    class flexMapper(brukerMapper.brukerMapper):
+        """Coordinate mapper for the Bruker timsTOF fleX."""
+
+        def __init__(self, coord_file=None):
+            # brukerMapper.loadStagePoints() reads this during __init__,
+            # so it has to be set first.
+            self.motorCoordFilename = coord_file or os.path.join(
+                HERE, "flexCoords.txt")
+            self.instrumentExtension = ".xeo"
+            self.instrumentName = "timsTOF fleX"
+            super().__init__()
+
+            # True on every Bruker mapper microMS ships: stage y counts
+            # opposite to image y.
+            self.reflectCoordinates = True
+
+        # -- required concrete methods ------------------------------------
+
+        def isValidMotorCoord(self, instr):
+            """Stage coordinates are two numbers separated by a space."""
+            if instr is None or " " not in instr:
+                return False
+            try:
+                a, b = instr.split(" ")[:2]
+                float(a)
+                float(b)
+                return True
+            except ValueError:
+                return False
+
+        def extractMotorPoint(self, inStr):
+            if not self.isValidMotorCoord(inStr):
+                return None
+            a, b = inStr.split(" ")[:2]
+            return (int(float(a)), int(float(b)))
+
+        def loadInstrumentFile(self, filename):
+            return self.loadXEO(filename)
+
+        def saveInstrumentFile(self, filename, blobs):
+            self.writeXEO(filename, blobs)
+
+
+    def write_coord_file(path, calibration):
+        """
+        Write the tab-delimited file brukerMapper.loadStagePoints reads.
+
+        calibration: [{"name": "C5", "x_um": ..., "y_um": ...}, ...]
+        """
+        with open(path, "w") as fh:
+            for c in calibration:
+                fh.write(f"{c['name']}\t{int(round(c['x_um']))}"
+                         f"\t{int(round(c['y_um']))}\n")
+        return path
+
+
+    def make_blob(x_px, y_px, radius=1.0, group=None):
+        """A microMS blob at a pixel position."""
+        return blob.blob(x=x_px, y=y_px, radius=radius, circularity=1.0,
+                         group=group)
+
+    return types.SimpleNamespace(flexMapper=flexMapper,
+                                 write_coord_file=write_coord_file,
+                                 make_blob=make_blob)
+
+
 def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
               cfg: dict, M: "Transform | None" = None) -> list[Path]:
     """
@@ -1682,7 +1769,7 @@ def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
               "written.")
         return []
 
-    import flex_mapper
+    flex_mapper = _flex_mapper()
 
     coord_file = HERE / "flexCoords.txt"
     flex_mapper.write_coord_file(coord_file, cal)
@@ -4160,7 +4247,11 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     # -- laser shot pattern ----------------------------------------------
     # right of the bead size / isolation / max points rows
     pf = tk.Frame(body, bg=GUI_BG)
-    pf.grid(row=bead_row, column=1, rowspan=3, sticky="ne", pady=4)
+    # an empty 4th row takes the picture's extra height, so the three
+    # rows keep their normal spacing
+    body.rowconfigure(row[0], weight=1)
+    row[0] += 1
+    pf.grid(row=bead_row, column=1, rowspan=4, sticky="ne", pady=4)
     gui_label(pf, "Laser shot pattern").pack(anchor="w", pady=(0, 2))
     p_fig, p_ax, p_canvas, p_w = gui_pattern_canvas(pf, GUI_PATTERN_IN / 2)
     p_w.pack(side="left", anchor="w")
