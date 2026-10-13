@@ -2337,7 +2337,9 @@ def attach_zoom(fig, ax, step: float = 1.3, arrow_zoom=True):
     the up / down arrows to something else -- panning in the fiducial
     window, moving an unset circle in the bead window.
     """
-    home = {"lim": None}
+    # the limits show_pyramid set (the whole image), before the window's
+    # shape widens them; None if nothing is drawn yet
+    home = {"lim": (ax.get_xlim(), ax.get_ylim()) if ax.images else None}
     pan = {"px": None}
 
     def remember_home():
@@ -2413,6 +2415,20 @@ def attach_zoom(fig, ax, step: float = 1.3, arrow_zoom=True):
     fig.canvas.mpl_connect("button_release_event", on_release)
     fig.canvas.mpl_connect("key_press_event", on_key)
     fig.canvas.mpl_connect("draw_event", lambda _e: remember_home())
+
+    def on_resize(_ev):
+        """Window resized or maximized: a view of the whole scan is
+        fitted to the new shape again; a zoomed-in view keeps its
+        centre and scale and simply shows more or less around it."""
+        if home["lim"] is None:
+            return
+        (hx, hy), (x0, x1), (y0, y1) = (
+            [sorted(v) for v in home["lim"]],
+            sorted(ax.get_xlim()), sorted(ax.get_ylim()))
+        if x0 <= hx[0] and x1 >= hx[1] and y0 <= hy[0] and y1 >= hy[1]:
+            fit()
+
+    fig.canvas.mpl_connect("resize_event", on_resize)
     return zoom_in, zoom_out, fit
 
 
@@ -3176,6 +3192,23 @@ def gui_ask(parent, title: str, text: str, yes: str = "Yes",
     return answer["yes"]
 
 
+def gui_fill_screen(win, w: int, h: int, maximize: bool = True) -> None:
+    """Size an image window: w x h clamped to the screen, then (by
+    default) maximized. The image area follows every later resize or
+    full screen -- see gui_image_canvas."""
+    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+    win.geometry(f"{min(w, sw)}x{min(h, sh - px(80))}")
+    if not maximize:
+        return
+    try:
+        win.state("zoomed")                   # Windows, macOS
+    except tk.TclError:
+        try:
+            win.attributes("-zoomed", True)   # Linux / X11
+        except tk.TclError:
+            pass
+
+
 def gui_image_canvas(parent, img, bg=GUI_BG):
     """matplotlib figure embedded in tk, drawn through show_pyramid so
     the 48-megapixel scan stays responsive. Returns (fig, ax, canvas)."""
@@ -3192,8 +3225,22 @@ def gui_image_canvas(parent, img, bg=GUI_BG):
     w.bind("<Enter>", lambda _e: w.focus_set())
     if img is not None:
         show_pyramid(fig, ax, img, cmap="gray")
-        ax.set_aspect("equal")
+        ax.set_aspect("equal", adjustable="datalim")
+        _quiet_datalim_note()
     return fig, ax, canvas
+
+
+def _quiet_datalim_note() -> None:
+    """With adjustable="datalim" matplotlib logs "Ignoring fixed x
+    limits to fulfill fixed data aspect..." on every zoom -- widening
+    the view is exactly what is wanted, so drop that one message."""
+    import logging
+    lg = logging.getLogger("matplotlib.axes._base")
+    if not any(getattr(f, "_datalim_note", False) for f in lg.filters):
+        f = logging.Filter()
+        f.filter = lambda rec: "fulfill fixed data aspect" not in rec.getMessage()
+        f._datalim_note = True
+        lg.addFilter(f)
 
 
 def gui_attach_drag_pan(fig, ax, widget=None, when=None, button=1):
@@ -3906,7 +3953,12 @@ def gui_detect_broad(g, d: dict) -> list:
        -- scanner streaks, hairs, specks;
     3. keep each remaining blob whose equivalent diameter is inside the
        size window and that fills at least GUI_BROAD_FILL of its
-       enclosing circle.
+       enclosing circle. Without matrix a bead shows as a dark core in
+       a bright scanner halo, and the blob is the whole of it: up to
+       GUI_BODY_FACTOR x the bead (measured on these scans, see
+       GUI_BODY_FACTOR), so the window's upper end is stretched by that
+       factor. The diameter reported is the whole blob, halo included,
+       so the shots land outside the halo.
 
     Returns (x, y, diameter_px, False) like the other detectors; the
     bead window marks these as accepted, to be checked by hand.
@@ -3914,7 +3966,7 @@ def gui_detect_broad(g, d: dict) -> list:
     import cv2
     h, w = g.shape[:2]
     dmin, dmax = (float(v) for v in d["broad-diameter-px"])
-    dmax = max(dmax, dmin + 1)
+    dmax = max(dmax * GUI_BODY_FACTOR, dmin + 1)     # bead + its halo
 
     def odd(v):
         return max(3, 2 * int(round(v / 2)) + 1)
@@ -4366,7 +4418,7 @@ def gui_review_window(master, folder: Path):
         return None
     win = tk.Toplevel(master, bg=GUI_BG)
     win.title(f"microMS_beadtargeting -- review  {folder.name}")
-    win.geometry(f"{px(1100)}x{px(760)}")
+    gui_fill_screen(win, px(1100), px(760), maximize=False)
     gui_title_strip(win, f"Review   --   {folder.name}")
 
     bar = tk.Frame(win, bg=GUI_BG, padx=8, pady=6)
@@ -4650,7 +4702,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     v = state.v
     win = tk.Toplevel(master, bg=GUI_BG)
     win.title("microMS_beadtargeting -- select")
-    win.geometry(f"{px(1280)}x{px(800)}")
+    gui_fill_screen(win, px(1280), px(800))
     gui_title_strip(win, "Bead selection   --   "
                          f"{state.path.name if state.path else 'no scan'}")
 
@@ -5045,7 +5097,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
 def gui_pick_window(master, state: GuiState):
     win = tk.Toplevel(master, bg=GUI_BG)
     win.title("microMS_beadtargeting -- pick")
-    win.geometry(f"{px(1280)}x{px(800)}")
+    gui_fill_screen(win, px(1280), px(800))
     gui_menu_bar(win, {"About": about_menu_items(win)})
     gui_title_strip(win, "Correlate fiducials   --   "
                          f"{state.path.name if state.path else 'no scan'}")
