@@ -300,9 +300,31 @@ def preload_gui_libs() -> None:
 # Do not reuse these across sessions once the slide has been remounted:
 # repositioning shows up as a systematic error at every target.
 FIDUCIALS = [
-    {"x_px": 262.46, "y_px": 253.34, "x_um": 18601.50, "y_um": -20310.80},
-    {"x_px": 9702.07, "y_px": 265.34, "x_um": 86083.10, "y_um": -20161.00},
-    {"x_px": 248.16, "y_px": 7364.29, "x_um": 18646.70, "y_um": -69830.80},
+    {"x_px": 2037.89, "y_px": 1494.87, "x_um": 21119.50, "y_um": -20632.80},
+    {"x_px": 4859.69, "y_px": 1518.31, "x_um": 32404.30, "y_um": -20581.60},
+    {"x_px": 6969.57, "y_px": 1424.54, "x_um": 40623.70, "y_um": -20104.40},
+    {"x_px": 8911.65, "y_px": 1312.26, "x_um": 48345.80, "y_um": -19510.20},
+    {"x_px": 11010.73, "y_px": 1448.30, "x_um": 56593.80, "y_um": -19867.40},
+    {"x_px": 12423.04, "y_px": 1380.53, "x_um": 62233.30, "y_um": -19464.40},
+    {"x_px": 13894.98, "y_px": 1486.25, "x_um": 68112.20, "y_um": -19801.10},
+    {"x_px": 15380.48, "y_px": 1269.39, "x_um": 73975.80, "y_um": -18862.40},
+    {"x_px": 16863.27, "y_px": 1572.99, "x_um": 79876.80, "y_um": -20052.80},
+    {"x_px": 18145.46, "y_px": 1551.31, "x_um": 85038.30, "y_um": -19725.30},
+    {"x_px": 18351.47, "y_px": 3240.11, "x_um": 85979.40, "y_um": -26510.90},
+    {"x_px": 18402.98, "y_px": 4752.72, "x_um": 86156.10, "y_um": -32527.70},
+    {"x_px": 18167.14, "y_px": 6129.78, "x_um": 85434.20, "y_um": -38068.80},
+    {"x_px": 15963.29, "y_px": 6167.73, "x_um": 76605.90, "y_um": -38305.60},
+    {"x_px": 14008.84, "y_px": 6390.02, "x_um": 688672.00, "y_um": -39338.20},
+    {"x_px": 12290.21, "y_px": 6324.96, "x_um": 62101.90, "y_um": -39300.20},
+    {"x_px": 10888.75, "y_px": 6395.44, "x_um": 56599.90, "y_um": -39562.70},
+    {"x_px": 9462.89, "y_px": 6314.11, "x_um": 50888.60, "y_um": -39341.00},
+    {"x_px": 7974.68, "y_px": 6287.01, "x_um": 44959.20, "y_um": -39358.60},
+    {"x_px": 6288.59, "y_px": 6102.67, "x_um": 38308.20, "y_um": -38718.40},
+    {"x_px": 4759.72, "y_px": 6053.88, "x_um": 32255.10, "y_um": -38647.40},
+    {"x_px": 3247.12, "y_px": 6018.64, "x_um": 26132.50, "y_um": -38639.90},
+    {"x_px": 1964.93, "y_px": 5820.76, "x_um": 21139.60, "y_um": -37890.70},
+    {"x_px": 2030.40, "y_px": 4523.97, "x_um": 21277.20, "y_um": -32726.30},
+    {"x_px": 1623.79, "y_px": 3279.10, "x_um": 19584.20, "y_um": -27824.70},
 ]
 
 
@@ -1453,22 +1475,29 @@ def write_csv(path: Path, beads: list[Bead], shots: list[Shot]) -> None:
 # target instrument (Imaging_Run.run, AutoExecute 7.6.6.0) carries
 # baseGeometry="MTP Slide Adapter II" -- exactly the string below.
 #
-# The surrounding XML wrapper is still UNVERIFIED; no genuine .xeo has
-# been seen. Diff one against this writer's output before acquiring.
+# The wrapper is CONFIRMED (2026-10-13) against a genuine .xeo from
+# Dr Neumann's instrument, "MTP Slide Adapter II.xeo" ($Revision 1.6).
+# It differs from microMS's brukerMapper header (Revision 1.5) in:
+# RowsNumber 10 (not 100); MappingParameters mox/moy 0.0 (not 56.24 /
+# 42.64) and alpha/beta 51750 (not 51.750); the MappingParameters and
+# PlateSpots lines indented with four spaces, the AutoTeachSpots block
+# with tabs only; </PlateType> unindented and followed by CRLF. The
+# PlateSpot lines and the UnitCoord grid (C5 = -0.652174, 0.478261)
+# are the same in both, so UnitCoord values are computed unchanged.
 # =====================================================================
 
-# FORMAT SPEC, reproduced verbatim from microMS's brukerMapper.py so
-# that files interoperate. This is the one place microMS source is
-# copied; see ATTRIBUTION.md.
+# FORMAT SPEC, reproduced verbatim from Dr Neumann's
+# "MTP Slide Adapter II.xeo". flexMapper hands these to microMS's own
+# writeXEO in place of brukerMapper's header and footer.
 #
 # The header is 12 lines, plus the <PlateSpots> line written per file,
 # giving the 13 that microMS's own loadXEO skips. The footer is 12.
 
 XEO_HEADER = [
-    '<!-- $Revision: 1.5 $-->',
+    '<!-- $Revision: 1.6 $-->',
     '<PlateType>',
     '\t<GlobalParameters PlateTypeName="MTP Slide Adapter II" ProbeType="MTP"',
-    '\t                  RowsNumber="100" ChipNumber="1" ChipsInRow="1"',
+    '\t                  RowsNumber="10" ChipNumber="1" ChipsInRow="1"',
     '\t                  X_ChipOffsetSize="0" Y_ChipOffsetSize="0"',
     '\t                  HasDirectLabels="false" HasColRowLabels="true"',
     '\t                  HasNearNeighbourCalibrants="false"',
@@ -1477,37 +1506,41 @@ XEO_HEADER = [
     '\t                  FirstCalibrant="TPX1" SecondCalibrant="TPX2" '
     'ThirdCalibrant="TPX3"',
     '\t                  />',
-    '\t<MappingParameters mox="56.239998" moy="42.635009" sinphi="0.000000" '
-    'cosphi="1.000000" alpha="51.750000" beta="51.750000" tansigma="0.000000"/>',
+    '    <MappingParameters mox="0.0" moy="0.0" sinphi="0.000000" '
+    'cosphi="1.000000" alpha="51750" beta="51750" tansigma="0.000000"/>',
 ]
+
+# writeXEO writes this line itself, with a tab; flexMapper re-indents it
+XEO_PLATESPOTS_INDENT = '    '
 
 XEO_FOOTER = [
     '\t</PlateSpots>',
-    '    \t<AutoTeachSpots>',
-    '    \t\t<PlateSpot PositionIndex="0" PositionName="TPX1" '
+    '\t<AutoTeachSpots>',
+    '\t\t<PlateSpot PositionIndex="0" PositionName="TPX1" '
     'UnitCoord_X="-0.729469" UnitCoord_Y="0.550725"/>',
-    '    \t\t<PlateSpot PositionIndex="1" PositionName="TPX2" '
+    '\t\t<PlateSpot PositionIndex="1" PositionName="TPX2" '
     'UnitCoord_X="0.729469" UnitCoord_Y="0.550725"/>',
-    '    \t\t<PlateSpot PositionIndex="2" PositionName="TPX3" '
+    '\t\t<PlateSpot PositionIndex="2" PositionName="TPX3" '
     'UnitCoord_X="0.729469" UnitCoord_Y="0.057971"/>',
-    '    \t\t<PlateSpot PositionIndex="3" PositionName="TPX4" '
+    '\t\t<PlateSpot PositionIndex="3" PositionName="TPX4" '
     'UnitCoord_X="-0.729469" UnitCoord_Y="0.057971"/>',
-    '    \t\t<PlateSpot PositionIndex="4" PositionName="TPY1" '
+    '\t\t<PlateSpot PositionIndex="4" PositionName="TPY1" '
     'UnitCoord_X="-0.729469" UnitCoord_Y="-0.057971"/>',
-    '    \t\t<PlateSpot PositionIndex="5" PositionName="TPY2" '
+    '\t\t<PlateSpot PositionIndex="5" PositionName="TPY2" '
     'UnitCoord_X="0.729469" UnitCoord_Y="-0.057971"/>',
-    '    \t\t<PlateSpot PositionIndex="6" PositionName="TPY3" '
+    '\t\t<PlateSpot PositionIndex="6" PositionName="TPY3" '
     'UnitCoord_X="-0.729469" UnitCoord_Y="-0.550725"/>',
-    '    \t\t<PlateSpot PositionIndex="7" PositionName="TPY4" '
+    '\t\t<PlateSpot PositionIndex="7" PositionName="TPY4" '
     'UnitCoord_X="0.729469" UnitCoord_Y="-0.550725"/>',
-    '    \t</AutoTeachSpots>',
-    '    </PlateType>',
+    '\t</AutoTeachSpots>',
+    '</PlateType>',
 ]
 
 # Named MTP grid positions and their UnitCoord fractions, from
 # brukerMapper.py. FORMAT SPEC -- plate geometry, not a measurement.
 # UnitCoord is a SIGNED fraction about the plate centre; the header's
-# alpha and beta give the scale, 51.75 mm per unit on both axes.
+# alpha and beta give the scale, 51.75 mm per unit on both axes
+# (written 51750, in um, in Dr Neumann's reference .xeo).
 MTP_MAP_Y = {'C': 0.478261, 'D': 0.391304, 'E': 0.304348, 'F': 0.217391,
              'G': 0.130435, 'J': -0.130435, 'K': -0.217391, 'L': -0.304348,
              'M': -0.391304, 'N': -0.478261}
@@ -1697,6 +1730,11 @@ def _flex_mapper():
             # opposite to image y.
             self.reflectCoordinates = True
 
+            # Dr Neumann's reference .xeo in place of brukerMapper's
+            # Revision 1.5 header and footer (see XEO_HEADER)
+            self.header = "\n".join(XEO_HEADER) + "\n"
+            self.footer = "\n".join(XEO_FOOTER) + "\n"
+
         # -- required concrete methods ------------------------------------
 
         def isValidMotorCoord(self, instr):
@@ -1722,6 +1760,14 @@ def _flex_mapper():
 
         def saveInstrumentFile(self, filename, blobs):
             self.writeXEO(filename, blobs)
+            # writeXEO puts a tab before <PlateSpots>; the reference
+            # indents it with four spaces and uses CRLF line ends
+            path = Path(filename)
+            if path.exists():
+                text = path.read_text().replace(
+                    "\n\t<PlateSpots ",
+                    "\n" + XEO_PLATESPOTS_INDENT + "<PlateSpots ", 1)
+                path.write_text(text, newline="\r\n")
 
 
     def write_coord_file(path, calibration):
@@ -2283,11 +2329,13 @@ def show_pyramid(fig, ax, img, **imshow_kw):
 # cursor.
 # =====================================================================
 
-def attach_zoom(fig, ax, step: float = 1.3):
+def attach_zoom(fig, ax, step: float = 1.3, arrow_zoom=True):
     """Wire scroll zoom, middle-drag pan and keyboard shortcuts.
 
     Returns (zoom_in, zoom_out, fit) so the same actions can be bound
-    to buttons.
+    to buttons. arrow_zoom False (or a callable returning False) leaves
+    the up / down arrows to something else -- panning in the fiducial
+    window, moving an unset circle in the bead window.
     """
     home = {"lim": None}
     pan = {"px": None}
@@ -2351,9 +2399,10 @@ def attach_zoom(fig, ax, step: float = 1.3):
             pan["px"] = None
 
     def on_key(ev):
-        if ev.key in ("+", "=", "up"):
+        arrows = arrow_zoom() if callable(arrow_zoom) else arrow_zoom
+        if ev.key in ("+", "=") or (arrows and ev.key == "up"):
             zoom_in()
-        elif ev.key in ("-", "_", "down"):
+        elif ev.key in ("-", "_") or (arrows and ev.key == "down"):
             zoom_out()
         elif ev.key in ("f", "home", "0"):
             fit()
@@ -3246,6 +3295,188 @@ class GuiBoxTool:
             self.on_change(None)
 
 
+GUI_PENDING = "#1f77b4"      # a drawn circle not yet accepted (blue)
+GUI_ARROW_STEP_PX = 1        # one arrow press moves it one image pixel
+GUI_ARROW_PAN = 0.10         # fiducial window: one press pans 10 % of the view
+
+
+class GuiCircleTool:
+    """
+    Manual selection: press on the bead centre, drag outwards to size
+    the circle, release. The circle stays blue -- not yet a bead -- and
+    the arrow keys move it GUI_ARROW_STEP_PX image pixels per press;
+    Enter sets it (on_set(x, y, diameter_px) makes it an accepted bead,
+    drawn green), Esc drops it. Active only while `mode_var` is on and
+    `blocked()` (the zoom box, say) is not.
+    """
+
+    def __init__(self, fig, ax, mode_var, on_set, status, um_per_px,
+                 blocked=lambda: False):
+        from matplotlib.patches import Circle
+        self.fig, self.ax, self.mode_var = fig, ax, mode_var
+        self.on_set, self.status, self.um_per_px = on_set, status, um_per_px
+        self.blocked = blocked
+        self.centre = None                  # (x, y) while blue
+        self.r = 0.0
+        self.dragging = False
+        self.patch = Circle((0, 0), 1, fill=True, fc=GUI_PENDING, alpha=0.25,
+                            ec=GUI_PENDING, lw=2.0, visible=False)
+        self.ring = Circle((0, 0), 1, fill=False, ec=GUI_PENDING, lw=2.0,
+                           visible=False)
+        ax.add_patch(self.patch)
+        ax.add_patch(self.ring)
+        fig.canvas.mpl_connect("button_press_event", self._press)
+        fig.canvas.mpl_connect("motion_notify_event", self._motion)
+        fig.canvas.mpl_connect("button_release_event", self._release)
+        fig.canvas.mpl_connect("key_press_event", self._key)
+
+    @property
+    def pending(self):
+        return self.centre if (self.centre and not self.dragging) else None
+
+    def _show(self):
+        for p in (self.patch, self.ring):
+            p.center = self.centre
+            p.set_radius(max(self.r, 0.5))
+            p.set_visible(True)
+        self.fig.canvas.draw_idle()
+        d_um = 2 * self.r * self.um_per_px()
+        self.status(f"circle at x {self.centre[0]:.0f}  y {self.centre[1]:.0f}"
+                    f"   diameter {d_um:.0f} um ({2 * self.r:.0f} px)"
+                    + ("" if self.dragging else
+                       "   --   arrow keys move it, Enter accepts, Esc drops it"))
+
+    def drop(self, why: str = ""):
+        self.centre, self.r, self.dragging = None, 0.0, False
+        self.patch.set_visible(False)
+        self.ring.set_visible(False)
+        self.fig.canvas.draw_idle()
+        if why:
+            self.status(why)
+
+    def _press(self, ev):
+        if (ev.button != 1 or not self.mode_var.get() or ev.inaxes is not self.ax
+                or ev.xdata is None or self.blocked()):
+            return
+        # a new press replaces a blue circle that was never accepted
+        self.centre, self.r, self.dragging = (ev.xdata, ev.ydata), 0.0, True
+        self._show()
+
+    def _motion(self, ev):
+        if not self.dragging or ev.xdata is None:
+            return
+        self.r = math.hypot(ev.xdata - self.centre[0], ev.ydata - self.centre[1])
+        self._show()
+
+    def _release(self, ev):
+        if ev.button != 1 or not self.dragging:
+            return
+        self.dragging = False
+        if self.r < 1.0:
+            self.drop("press on the bead centre and drag outwards to size "
+                      "the circle")
+            return
+        self._show()
+
+    def _key(self, ev):
+        if self.pending is None:
+            return
+        step = {"left": (-1, 0), "right": (1, 0),
+                "up": (0, -1), "down": (0, 1)}.get(ev.key)
+        if step:
+            # image y runs downward, so up is -y
+            self.centre = (self.centre[0] + step[0] * GUI_ARROW_STEP_PX,
+                           self.centre[1] + step[1] * GUI_ARROW_STEP_PX)
+            self._show()
+        elif ev.key == "enter":
+            (x, y), r = self.centre, self.r
+            self.drop()
+            self.on_set(x, y, 2 * r)
+        elif ev.key == "escape":
+            self.drop("circle dropped")
+
+
+class GuiZoomBox:
+    """One-shot zoom box: while `var` is on, a left-drag draws a dashed
+    rectangle and the view zooms to it (widened to the window's shape so
+    the image is not stretched); then `var` turns itself off."""
+
+    def __init__(self, fig, ax, var, on_done=None):
+        from matplotlib.patches import Rectangle
+        self.fig, self.ax, self.var, self.on_done = fig, ax, var, on_done
+        self.start = None
+        self.rect = Rectangle((0, 0), 0, 0, fill=False, ec="#000080",
+                              lw=1.5, ls="--", visible=False)
+        ax.add_patch(self.rect)
+        fig.canvas.mpl_connect("button_press_event", self._press)
+        fig.canvas.mpl_connect("motion_notify_event", self._motion)
+        fig.canvas.mpl_connect("button_release_event", self._release)
+
+    def _press(self, ev):
+        if (ev.button != 1 or not self.var.get() or ev.inaxes is not self.ax
+                or ev.xdata is None):
+            return
+        self.start = (ev.xdata, ev.ydata)
+        self.rect.set_bounds(ev.xdata, ev.ydata, 0, 0)
+        self.rect.set_visible(True)
+
+    def _motion(self, ev):
+        if self.start is None or ev.xdata is None:
+            return
+        x0, y0 = self.start
+        self.rect.set_bounds(min(x0, ev.xdata), min(y0, ev.ydata),
+                             abs(ev.xdata - x0), abs(ev.ydata - y0))
+        self.fig.canvas.draw_idle()
+
+    def _release(self, ev):
+        if self.start is None or ev.button != 1:
+            return
+        x0, y0 = self.start
+        self.start = None
+        self.rect.set_visible(False)
+        if ev.xdata is not None and abs(ev.xdata - x0) >= 2 \
+                and abs(ev.ydata - y0) >= 2:
+            # keep the view's aspect: grow the shorter side of the box
+            xl, yl = self.ax.get_xlim(), self.ax.get_ylim()
+            aspect = abs(yl[1] - yl[0]) / max(abs(xl[1] - xl[0]), 1e-9)
+            cx, cy = (x0 + ev.xdata) / 2, (y0 + ev.ydata) / 2
+            w, h = abs(ev.xdata - x0), abs(ev.ydata - y0)
+            if h / w > aspect:
+                w = h / aspect
+            else:
+                h = w * aspect
+            self.ax.set_xlim(*sorted((cx - w / 2, cx + w / 2),
+                                     reverse=xl[0] > xl[1]))
+            self.ax.set_ylim(*sorted((cy - h / 2, cy + h / 2),
+                                     reverse=yl[0] > yl[1]))
+        self.var.set(False)
+        self.fig.canvas.draw_idle()
+        if self.on_done:
+            self.on_done()
+
+
+def gui_arrow_pan(win, fig, ax, frac: float = GUI_ARROW_PAN) -> None:
+    """Arrow keys pan the view by `frac` of its width / height, whatever
+    has the keyboard focus -- except a text box, where the arrows keep
+    moving the text cursor."""
+    def pan(dx: float, dy: float):
+        def handler(_e=None):
+            if isinstance(win.focus_get(), (tk.Entry, tk.Spinbox, tk.Text)):
+                return None
+            x0, x1 = ax.get_xlim()
+            y0, y1 = ax.get_ylim()
+            ddx, ddy = dx * abs(x1 - x0), dy * abs(y1 - y0)
+            ax.set_xlim(x0 + ddx, x1 + ddx)
+            ax.set_ylim(y0 + ddy, y1 + ddy)
+            fig.canvas.draw_idle()
+            return "break"
+        return handler
+    # image y runs downward: Up shows what is above, i.e. smaller y
+    for key, dx, dy in (("Left", -frac, 0), ("Right", frac, 0),
+                        ("Up", 0, -frac), ("Down", 0, frac)):
+        win.bind(f"<{key}>", pan(dx, dy))
+
+
 def gui_load_scan(path: Path):
     """Greyscale scan for the windows, or None with the reason printed."""
     if not path.exists():
@@ -3434,6 +3665,18 @@ GUI_BODY_MARGIN_PX = 4
 # bead seen so far 5.9.
 GUI_MIN_CONTRAST = 2
 
+# broad method: a lenient pass for faint beads (no matrix). A pixel is
+# "something" when it differs from the flat-field background by this
+# many noise standard deviations, darker OR lighter; the noise is
+# measured on the box itself (robust MAD). 3 keeps the specks of pure
+# noise apart while a bead's faint rim and cap still register.
+GUI_BROAD_SIGNIF = 3.0
+# ...and a blob is "remotely round" when its area fills at least this
+# fraction of the smallest circle around it (1.0 a disc, 0.5 about a
+# 2:1 ellipse, a line near 0). On the 261008 no-matrix scans, blobs
+# below 0.55 were almost all pieces of the scanner streaks.
+GUI_BROAD_FILL = 0.55
+
 SAVES_DIR = HERE / "SAVES"
 LAST_SETTINGS = SAVES_DIR / "last_settings.json"
 
@@ -3587,6 +3830,8 @@ def gui_detect_region(img, box, cfg: dict, method: str) -> list:
         found = gui_dark_only(g, d, _detect_blobdetector(g, d))   # sweep
     elif method == "quick":
         found = list(_detect_flatfield(g, d))
+    elif method == "broad":
+        found = gui_detect_broad(g, d)     # lenient; accepted by analyze
     else:
         # strict: both detectors, objects combined (an object seen by
         # both counts once); gui_refilter then keeps only the best few
@@ -3643,6 +3888,106 @@ def gui_dark_only(g, d: dict, found: list) -> list:
         if cv2.mean(win, disc)[0] >= GUI_MIN_CONTRAST:
             out.append((x, y, size, cl))
     return out
+
+
+def gui_detect_broad(g, d: dict) -> list:
+    """
+    broad method: every faint, roughly round blob whose size is inside
+    the size window (d["broad-diameter-px"] = (lo, hi) in pixels). For
+    scans without matrix, where a bead is only a faint ring, a pale cap
+    or a dark crescent a few grey levels off the background.
+
+    1. flat field: subtract a large median, as _detect_flatfield does,
+       smooth a little, and mark every pixel that differs from the
+       background by GUI_BROAD_SIGNIF noise SDs -- darker or lighter;
+    2. join one bead's light and dark parts (closing, a third of the
+       smallest bead), fill holes so a ring counts whole, and drop
+       everything thinner than about half the smallest bead (opening)
+       -- scanner streaks, hairs, specks;
+    3. keep each remaining blob whose equivalent diameter is inside the
+       size window and that fills at least GUI_BROAD_FILL of its
+       enclosing circle.
+
+    Returns (x, y, diameter_px, False) like the other detectors; the
+    bead window marks these as accepted, to be checked by hand.
+    """
+    import cv2
+    h, w = g.shape[:2]
+    dmin, dmax = (float(v) for v in d["broad-diameter-px"])
+    dmax = max(dmax, dmin + 1)
+
+    def odd(v):
+        return max(3, 2 * int(round(v / 2)) + 1)
+
+    k = min(max(2 * int(1.5 * dmax / 4) + 1, 3), 255)
+    bg = cv2.resize(cv2.medianBlur(cv2.resize(
+        g, (max(w // 4, 1), max(h // 4, 1)), interpolation=cv2.INTER_AREA),
+        k), (w, h), interpolation=cv2.INTER_LINEAR)
+    step, pad = 1024, 4
+
+    def flat_strips():
+        """The smoothed flat field, 1024 rows at a time, so a
+        whole-slide box never holds a float copy of the scan."""
+        for y0 in range(0, h, step):
+            a, b = max(y0 - pad, 0), min(y0 + step + pad, h)
+            f = cv2.GaussianBlur(g[a:b].astype(np.float32)
+                                 - bg[a:b].astype(np.float32), (0, 0), 1.0)
+            yield y0, f[y0 - a:y0 - a + min(step, h - y0)]
+
+    # noise SD, robust (MAD), from every 4th pixel of the flat field
+    smp = np.concatenate([f[::4, ::4].ravel() for _, f in flat_strips()])
+    sd = max(float(np.median(np.abs(smp - np.median(smp)))) * 1.4826, 0.25)
+    del smp
+    m = np.zeros((h, w), np.uint8)
+    for y0, f in flat_strips():
+        m[y0:y0 + len(f)] = (np.abs(f) > GUI_BROAD_SIGNIF * sd) * np.uint8(255)
+    del bg
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (odd(dmin / 3),) * 2))
+    flood = cv2.copyMakeBorder(m, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+    cv2.floodFill(flood, None, (0, 0), 255)
+    m |= cv2.bitwise_not(flood[1:-1, 1:-1])                 # holes
+    del flood
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (odd(0.6 * dmin),) * 2))
+
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    side = np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT])
+    keep = np.nonzero((np.arange(n) > 0) & (side >= 0.5 * dmin)
+                      & (side <= 2 * dmax))[0]
+    out = []
+    for c, i in enumerate(keep):
+        bar_tick(c + 1, len(keep))
+        bx, by = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
+        bw_, bh_ = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+        x0, y0 = max(bx - 2, 0), max(by - 2, 0)
+        comp = (lab[y0:by + bh_ + 2, x0:bx + bw_ + 2] == i).astype(np.uint8)
+        cs, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not cs:
+            continue
+        cnt = max(cs, key=cv2.contourArea)
+        area = cv2.contourArea(cnt)
+        if area <= 0:
+            continue
+        dd = 2 * math.sqrt(area / math.pi)
+        if not (dmin <= dd <= dmax):
+            continue                                # outside the size window
+        _, rad = cv2.minEnclosingCircle(cnt)
+        if rad <= 0 or area / (math.pi * rad * rad) < GUI_BROAD_FILL:
+            continue                                # not even roughly round
+        mo = cv2.moments(cnt)
+        out.append((mo["m10"] / mo["m00"] + x0, mo["m01"] / mo["m00"] + y0,
+                    dd, False))
+    return out
+
+
+def gui_window_px(state, cfg: dict) -> tuple:
+    """The size window of the parameters window -- average bead size
+    +/- deviation -- in pixels at the current um/px."""
+    um_px = gui_transform(state, cfg).um_per_px
+    nominal = float(cfg["bead-diameter"])
+    dev = nominal * float(cfg.get("bead-diameter-tolerance", 0.35))
+    return max(nominal - dev, 0.0) / um_px, (nominal + dev) / um_px
 
 
 def gui_clearance(g, d: dict, found: list, cap_px: float) -> list:
@@ -4334,15 +4679,18 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         v["method"].set("default")
     elif v["flat_field"].get():
         v["method"].set("quick")
-    if v["method"].get() not in ("default", "quick", "strict", "threshold"):
+    if v["method"].get() not in ("default", "quick", "strict", "threshold",
+                                 "broad"):
         v["method"].set("default")          # a save made under the old names
     gui_dropdown(side, v["method"],
-                 ["default", "quick", "strict", "threshold"]).pack(
+                 ["default", "quick", "strict", "threshold", "broad"]).pack(
         anchor="w", pady=(2, 2), fill="x")
     gui_small(side, "default   global threshold sweep\n"
                     "quick      flat-field subtraction\n"
                     "strict     both combined, keep the best 5 %\n"
-                    "threshold  default, with the step set below",
+                    "threshold  default, with the step set below\n"
+                    "broad      any faint round blob in the size\n"
+                    "              window, all accepted -- reject by hand",
               justify="left", anchor="w").pack(anchor="w", fill="x",
                                                pady=(0, 4))
     # threshold step slider: live only for the threshold method, so
@@ -4377,6 +4725,13 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
                   ("Reject box", lambda: set_many("reject")),
                   ("Clear box", lambda: clear_box())):
         gui_button(side, t, fn).pack(fill="x", pady=2)
+    draw_mode = tk.BooleanVar(win, False)
+    gui_toggle(side, draw_mode, "Manual selection",
+               command=lambda: draw_changed()).pack(fill="x", pady=(2, 0))
+    gui_small(side, "drag from the centre to size a circle; blue:\n"
+                    "arrows move it, Enter accepts, Esc drops",
+              justify="left", anchor="w").pack(anchor="w", fill="x",
+                                               pady=(2, 0))
     gui_hrule(side).pack(fill="x", pady=6)
     manual_mode = tk.BooleanVar(win, False)
     gui_toggle(side, manual_mode, "Manual accept / reject",
@@ -4409,13 +4764,84 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     layer = GuiBeadLayer(fig, ax, show_vars)
     box = GuiBoxTool(fig, ax, widget, manual_mode,
                      on_change=lambda b: update_counts())
+    zoombox = tk.BooleanVar(win, False)
+    # left-drag draws the analysis box only when no other tool has it
+    box.active = lambda ev: not (manual_mode.get() or draw_mode.get()
+                                 or zoombox.get())
+    circle = GuiCircleTool(fig, ax, draw_mode, lambda x, y, d: set_circle(x, y, d),
+                           set_status,
+                           lambda: gui_transform(state, gui_apply_params(
+                               copy.deepcopy(state.cfg), v)).um_per_px,
+                           blocked=lambda: zoombox.get())
+    # matplotlib keeps only weak references to the tools' callbacks
+    win.tools = (circle, GuiZoomBox(fig, ax, zoombox,
+                                    on_done=lambda: zoom_box_done()))
+    zoom_fns = (None, None, None)
     if state.img is not None:
-        attach_zoom(fig, ax)
+        zoom_fns = attach_zoom(fig, ax,
+                               arrow_zoom=lambda: circle.pending is None)
         gui_attach_drag_pan(fig, ax, widget, button=3)
     widget.config(cursor="crosshair")
 
+    def draw_changed() -> None:
+        """Manual selection and manual accept / reject share the left
+        button, so one switches the other off."""
+        if draw_mode.get():
+            manual_mode.set(False)
+            widget.config(cursor="crosshair")
+            set_status("manual selection: press on a bead centre, drag out "
+                       "to size the circle, release")
+        else:
+            circle.drop()
+            mode_changed()
+
+    def set_circle(x: float, y: float, d: float) -> None:
+        """Enter on a blue circle: it becomes an accepted bead (a manual
+        pick, green), replacing any object whose centre is inside it."""
+        from matplotlib.patches import Circle
+        inside = [i for i, b in enumerate(state.beads)
+                  if math.hypot(b.x_px - x, b.y_px - y) <= d / 2]
+        b = Bead(x, y, d)
+        gui_set_manual(b, "accept")
+        if layer.beads is state.beads and len(layer.patches) == len(state.beads):
+            # one circle in, the replaced ones out -- redrawing every
+            # bead takes seconds on a full slide
+            for i in reversed(inside):
+                state.beads.pop(i)
+                layer.patches.pop(i).remove()
+            state.beads.append(b)
+            c = Circle((x, y), max(d / 2, 4), fill=False, lw=1.3,
+                       ec=gui_bead_colour(b))
+            ax.add_patch(c)
+            layer.patches.append(c)
+            gui_refilter(state)
+            layer.refresh()
+            update_counts()
+        else:
+            state.beads = [o for i, o in enumerate(state.beads)
+                           if i not in inside] + [b]
+            redraw_all()
+        set_status(f"circle accepted: x {x:.0f}  y {y:.0f}, {d:.0f} px"
+                   + (f" -- replaced {len(inside)} object(s) inside it"
+                      if inside else ""))
+
+    def zoom_box_on() -> None:
+        if zoombox.get():
+            set_status("zoom box: left-drag around the area to zoom to")
+            widget.config(cursor="crosshair")
+        else:
+            zoom_box_done()
+
+    def zoom_box_done() -> None:
+        widget.config(cursor="hand2" if manual_mode.get() else "crosshair")
+        set_status("zoomed to the box -- Zoom reset (or f) shows the whole "
+                   "scan" if not zoombox.get() else "")
+
     def mode_changed() -> None:
         on = manual_mode.get()
+        if on and draw_mode.get():
+            draw_mode.set(False)
+            circle.drop()
         widget.config(cursor="hand2" if on else "crosshair")
         set_status("manual mode: left-click a bead to flip accept / reject"
                    if on else "left-drag = draw the box     "
@@ -4474,12 +4900,21 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         if method == "threshold":
             cfg["detection"]["threshold-step"] = max(
                 1, int(round(gui_float(v["threshold_step"], 10))))
+        if method == "broad":
+            cfg["detection"]["broad-diameter-px"] = gui_window_px(state, cfg)
         # how far gui_clearance looks, in px: 3 x the isolation window
         cfg["detection"]["clear-cap-px"] = max(
             3 * float(cfg["min-bead-separation"])
             / gui_transform(state, cfg).um_per_px, 100)
         found = gui_detect_region(state.img, box.box, cfg, method)
+        n_before = len(state.beads)
         added = gui_merge(state, found, cfg)
+        if method == "broad":
+            # the lenient pass: everything it found starts accepted, as a
+            # manual pick, and is checked by hand (clumps stay clumps)
+            for b in state.beads[n_before:]:
+                if not b.clumped:
+                    gui_set_manual(b, "accept")
         state.boxes.append(tuple(box.box))
         bar_step("filtering")
         gui_refilter(state)
@@ -4505,7 +4940,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
 
     def on_click(ev):
         if (ev.button != 1 or not manual_mode.get() or ev.inaxes is not ax
-                or ev.xdata is None):
+                or ev.xdata is None or zoombox.get()):
             return
         if not state.beads:
             return
@@ -4591,6 +5026,13 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
                go_on, font=F_BIG).pack(side="right")
     gui_button(bottom, "Save and review", save_and_review,
                font=F_BIG).pack(side="right", padx=(0, 10))
+    zbar = tk.Frame(bottom, bg=GUI_BG)
+    zbar.pack(side="left")
+    for text, fn in (("Zoom +", zoom_fns[0]), ("Zoom -", zoom_fns[1])):
+        gui_button(zbar, text, fn, width=7).pack(side="left", padx=(0, 2))
+    gui_toggle(zbar, zoombox, "Zoom box", command=zoom_box_on).pack(
+        side="left", padx=(0, 2))
+    gui_button(zbar, "Zoom reset", zoom_fns[2]).pack(side="left")
 
     state.on_beads_changed = redraw_all
     redraw_all()
@@ -4614,7 +5056,7 @@ def gui_pick_window(master, state: GuiState):
     status = gui_small(bottom, "right-click = set pending pixel     "
                                "Tab = next box     Ctrl+V = paste     "
                                "Enter = add     scroll = zoom     "
-                               "left-drag = move", anchor="w")
+                               "left-drag / arrow keys = move", anchor="w")
     status.pack(side="bottom", anchor="w", fill="x", pady=(6, 0))
 
     def set_status(text: str) -> None:
@@ -4814,9 +5256,10 @@ def gui_pick_window(master, state: GuiState):
                                    "clumped": tk.BooleanVar(win, True),
                                    "rejected": tk.BooleanVar(win, True)})
     if state.img is not None:
-        for b, fn in zip(zoom_btns, attach_zoom(fig, ax)):
+        for b, fn in zip(zoom_btns, attach_zoom(fig, ax, arrow_zoom=False)):
             b.config(command=fn)
         gui_attach_drag_pan(fig, ax, widget)
+        gui_arrow_pan(win, fig, ax)          # arrow keys move the view
 
     def refit():
         for a in marks:
