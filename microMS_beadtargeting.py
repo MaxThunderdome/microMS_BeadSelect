@@ -3931,8 +3931,10 @@ GUI_BROAD_SIGNIF = 3.0
 # ...and a blob is "remotely round" when its area fills at least this
 # fraction of the smallest circle around it (1.0 a disc, 0.5 about a
 # 2:1 ellipse, a line near 0). On the 261008 no-matrix scans, blobs
-# below 0.55 were almost all pieces of the scanner streaks.
-GUI_BROAD_FILL = 0.55
+# below 0.55 were almost all pieces of the scanner streaks. Lowered to
+# 0.50 on 2026-10-19: a pale bead whose cap and crescent have just been
+# joined measures 0.53-0.60 (its brighter neighbours 0.56-0.79).
+GUI_BROAD_FILL = 0.50
 # ...and the stringency slider of the bead window (100 = everything the
 # steps above found, as before). Below 100 a blob must also SPAN at
 # least GUI_BROAD_SWING x (1 - stringency / 100) noise SDs from its
@@ -4047,6 +4049,7 @@ class GuiState:
         self.save_path = None            # current SAVES/*.json
         self.T = None
         self.on_beads_changed = None     # the bead window hooks this
+        self.filter = None               # trained filter dict (gui_filter_load)
 
     def active_fids(self) -> list:
         return [f for f in self.fids if not f.get("hide")]
@@ -4103,6 +4106,8 @@ def gui_detect_region(img, box, cfg: dict, method: str) -> list:
         found = list(_detect_flatfield(g, d))
     elif method == "broad":
         found = gui_detect_broad(g, d)     # lenient; accepted by analyze
+    elif method == "trained":
+        found = gui_detect_trained(g, d, d["trained-filter"])
     else:
         # strict: both detectors, objects combined (an object seen by
         # both counts once); gui_refilter then keeps only the best few
@@ -4171,8 +4176,9 @@ def gui_detect_broad(g, d: dict) -> list:
     1. flat field: subtract a large median, as _detect_flatfield does,
        smooth a little, and mark every pixel that differs from the
        background by GUI_BROAD_SIGNIF noise SDs -- darker or lighter;
-    2. join one bead's light and dark parts (closing, a third of the
-       smallest bead), fill holes so a ring counts whole, and drop
+    2. join one bead's light and dark parts (closing, half of the
+       smallest bead -- a third left the pale beads' cap and crescent
+       apart, 2026-10-19), fill holes so a ring counts whole, and drop
        everything thinner than about half the smallest bead (opening)
        -- scanner streaks, hairs, specks;
     3. keep each remaining blob that fills at least GUI_BROAD_FILL of
@@ -4223,7 +4229,7 @@ def gui_detect_broad(g, d: dict) -> list:
     # stringency slider: required dark-to-light swing, 0 at 100 %
     need = GUI_BROAD_SWING * (1.0 - float(d.get("broad-stringency", 100)) / 100.0)
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (odd(dmin / 3),) * 2))
+        cv2.MORPH_ELLIPSE, (odd(dmin / 2),) * 2))
     flood = cv2.copyMakeBorder(m, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
     cv2.floodFill(flood, None, (0, 0), 255)
     m |= cv2.bitwise_not(flood[1:-1, 1:-1])                 # holes
@@ -4268,6 +4274,249 @@ def gui_detect_broad(g, d: dict) -> list:
                     dd, False))
     del bg
     return out
+
+
+# ---- trained filters (FilterTrainer/filter_trainer.py) ------------------
+# A trained filter is a .json written by the trainer, loaded through the
+# "upload filter template..." entry of the bead-matching dropdown. Two
+# kinds:
+#   "rerank"    the broad pass at 100 % finds the candidates; each one is
+#               scored 0..1 by a logistic model fitted to the circles the
+#               user drew (features below); the stringency slider keeps
+#               the candidates scoring at least 1 - slider / 100, so 100
+#               keeps everything the broad pass found, as it does for
+#               broad, and 50 keeps the model's own decision (score >= 0.5)
+#   "template"  the average flat-field patch of the circled beads;
+#               normalised cross-correlation finds the beads, and the
+#               slider keeps the peaks correlating at least 1 - slider / 100
+# Both programs call these same functions, so the trainer sees exactly
+# the candidates and features the bead window will.
+
+GUI_FILTER_FORMAT = "microMS_beadtargeting blobfilter 1"
+
+# the features of gui_blob_features, in order; a filter trained with a
+# different list is refused
+GUI_FEATURE_NAMES = ("size", "core", "rim", "halo", "surround", "contrast",
+                     "swing", "spread", "fill", "edge", "symmetry", "round")
+# ring radii of the features as multiples of the candidate's radius: the
+# inner disc, the whole disc, the halo (GUI_BODY_FACTOR, the measured
+# halo extent) and a surround one radius further out
+GUI_FEATURE_INNER = 0.5
+GUI_FEATURE_SURROUND = GUI_BODY_FACTOR + 1.0
+
+
+def gui_broad_field(g, d: dict):
+    """The broad method's background and noise SD, computed exactly as
+    gui_detect_broad does (its lines are repeated here so that function
+    stays untouched): (bg uint8 like g, sd float)."""
+    import cv2
+    h, w = g.shape[:2]
+    dmin, dmax = (float(v) for v in d["broad-diameter-px"])
+    acc_lo = 0.5 * dmin
+    acc_hi = max(2.0 * dmax * GUI_BODY_FACTOR, acc_lo + 1)
+    k = min(max(2 * int(1.5 * acc_hi / 4) + 1, 3), 255)
+    bg = cv2.resize(cv2.medianBlur(cv2.resize(
+        g, (max(w // 4, 1), max(h // 4, 1)), interpolation=cv2.INTER_AREA),
+        k), (w, h), interpolation=cv2.INTER_LINEAR)
+    step, pad = 1024, 4
+    parts = []
+    for y0 in range(0, h, step):
+        a, b = max(y0 - pad, 0), min(y0 + step + pad, h)
+        f = cv2.GaussianBlur(g[a:b].astype(np.float32)
+                             - bg[a:b].astype(np.float32), (0, 0), 1.0)
+        parts.append(f[y0 - a:y0 - a + min(step, h - y0)][::4, ::4].ravel())
+    smp = np.concatenate(parts)
+    sd = max(float(np.median(np.abs(smp - np.median(smp)))) * 1.4826, 0.25)
+    return bg, sd
+
+
+def gui_flat_window(g, bg, sd: float, x0: int, y0: int, x1: int, y1: int):
+    """The flat field of g[y0:y1, x0:x1] in noise-SD units, smoothed as
+    gui_detect_broad smooths it."""
+    import cv2
+    f = cv2.GaussianBlur(g[y0:y1, x0:x1].astype(np.float32)
+                         - bg[y0:y1, x0:x1].astype(np.float32), (0, 0), 1.0)
+    return f / sd
+
+
+def gui_blob_features(g, d: dict, cands: list, field=None) -> np.ndarray:
+    """
+    One row of GUI_FEATURE_NAMES per candidate (x, y, diameter_px, ...),
+    measured on the flat field in noise-SD units (negative = darker than
+    the background) over rings around the candidate's centre, radius r:
+      size      diameter over the middle of the broad size window
+      core      mean inside GUI_FEATURE_INNER x r
+      rim       mean between the inner disc and r
+      halo      mean between r and GUI_BODY_FACTOR x r
+      surround  mean between the halo and GUI_FEATURE_SURROUND x r
+      contrast  mean of the disc minus the surround
+      swing     max minus min inside the disc (the stringency measure)
+      spread    standard deviation inside the disc
+      fill      fraction of the disc beyond GUI_BROAD_SIGNIF (something)
+      edge      mean gradient magnitude on the rim ring
+      symmetry  |left - right| + |top - bottom| of the disc means
+      round     area / enclosing circle of the thresholded blob at the
+                centre (GUI_BROAD_FILL's measure), 0 when there is none
+    `field` = (bg, sd) from gui_broad_field, computed here when None.
+    """
+    import cv2
+    if not cands:
+        return np.zeros((0, len(GUI_FEATURE_NAMES)), np.float64)
+    bg, sd = field if field is not None else gui_broad_field(g, d)
+    h, w = g.shape[:2]
+    dmin, dmax = (float(v) for v in d["broad-diameter-px"])
+    nominal = max(0.5 * (dmin + dmax), 1.0)
+    rows = []
+    for c in cands:
+        x, y, dia = float(c[0]), float(c[1]), float(c[2])
+        r = max(dia / 2.0, 1.0)
+        R = int(math.ceil(GUI_FEATURE_SURROUND * r)) + 2
+        x0, y0 = max(int(round(x)) - R, 0), max(int(round(y)) - R, 0)
+        x1, y1 = min(int(round(x)) + R + 1, w), min(int(round(y)) + R + 1, h)
+        f = gui_flat_window(g, bg, sd, x0, y0, x1, y1)
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        dx, dy = xx - x, yy - y
+        rho = np.hypot(dx, dy)
+        inner = rho <= GUI_FEATURE_INNER * r
+        disc = rho <= r
+        rim = disc & ~inner
+        halo = (rho > r) & (rho <= GUI_BODY_FACTOR * r)
+        surround = (rho > GUI_BODY_FACTOR * r) & (rho <= GUI_FEATURE_SURROUND * r)
+
+        def mean(mask):
+            return float(f[mask].mean()) if mask.any() else 0.0
+
+        fd = f[disc] if disc.any() else np.zeros(1, np.float32)
+        gx = cv2.Sobel(f, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(f, cv2.CV_32F, 0, 1, ksize=3)
+        grad = np.hypot(gx, gy)
+        sym = (abs(mean(disc & (dx < 0)) - mean(disc & (dx >= 0)))
+               + abs(mean(disc & (dy < 0)) - mean(disc & (dy >= 0))))
+        # roundness of the "something" blob under the centre
+        m = (np.abs(f) > GUI_BROAD_SIGNIF).astype(np.uint8)
+        rnd = 0.0
+        if m.any():
+            n, lab, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+            cy, cx = int(round(y)) - y0, int(round(x)) - x0
+            i = int(lab[min(max(cy, 0), m.shape[0] - 1),
+                        min(max(cx, 0), m.shape[1] - 1)])
+            if i == 0 and disc.any():
+                # centre on background: the largest component in the disc
+                ids, cnt = np.unique(lab[disc], return_counts=True)
+                keep = ids > 0
+                i = int(ids[keep][np.argmax(cnt[keep])]) if keep.any() else 0
+            if i > 0:
+                comp = (lab == i).astype(np.uint8)
+                cs, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL,
+                                         cv2.CHAIN_APPROX_NONE)
+                if cs:
+                    cnt_ = max(cs, key=cv2.contourArea)
+                    area = cv2.contourArea(cnt_)
+                    _, rad = cv2.minEnclosingCircle(cnt_)
+                    if rad > 0:
+                        rnd = float(area / (math.pi * rad * rad))
+        rows.append([dia / nominal, mean(inner), mean(rim), mean(halo),
+                     mean(surround), mean(disc) - mean(surround),
+                     float(fd.max() - fd.min()), float(fd.std()),
+                     float((np.abs(fd) > GUI_BROAD_SIGNIF).mean()),
+                     float(grad[rim].mean()) if rim.any() else 0.0,
+                     sym, rnd])
+    return np.array(rows, np.float64)
+
+
+def gui_filter_load(path) -> dict:
+    """Read a trained filter; raises ValueError when it is not one."""
+    import json
+    with open(path, encoding="utf-8") as fh:
+        filt = json.load(fh)
+    if not isinstance(filt, dict) or filt.get("format") != GUI_FILTER_FORMAT:
+        raise ValueError("not a microMS_beadtargeting filter file")
+    if filt.get("kind") == "rerank":
+        if tuple(filt.get("features", ())) != GUI_FEATURE_NAMES:
+            raise ValueError("this filter was trained on a different "
+                             "feature set; train it again")
+        for k in ("mu", "sd", "w", "b"):
+            if k not in filt:
+                raise ValueError(f"filter is missing {k!r}")
+    elif filt.get("kind") == "template":
+        for k in ("template", "bead_px", "um_per_px"):
+            if k not in filt:
+                raise ValueError(f"filter is missing {k!r}")
+    else:
+        raise ValueError(f"unknown filter kind {filt.get('kind')!r}")
+    filt["path"] = str(path)
+    return filt
+
+
+def gui_filter_score(filt: dict, X: np.ndarray) -> np.ndarray:
+    """Logistic score 0..1 of each feature row under a rerank filter."""
+    if len(X) == 0:
+        return np.zeros(0, np.float64)
+    mu, sd = np.array(filt["mu"], np.float64), np.array(filt["sd"], np.float64)
+    w, b = np.array(filt["w"], np.float64), float(filt["b"])
+    z = ((X - mu) / sd) @ w + b
+    return 1.0 / (1.0 + np.exp(-np.clip(z, -50, 50)))
+
+
+def gui_filter_cutoff(d: dict) -> float:
+    """The slider as a score / correlation cutoff: 100 keeps all."""
+    p = min(max(float(d.get("broad-stringency", 100)), 1.0), 100.0)
+    return 1.0 - p / 100.0
+
+
+def gui_detect_template(g, d: dict, filt: dict, all_peaks: bool = False) -> list:
+    """
+    template kind: normalised cross-correlation of the trained patch
+    against the flat field, in strips like gui_detect_broad. A peak is a
+    local maximum within one bead diameter that correlates at least the
+    slider cutoff (every positive peak when all_peaks). The template is
+    rescaled when this scan's um/px differs from the training scan's.
+    Returns (x, y, diameter_px, False[, corr]) -- corr only with all_peaks.
+    """
+    import cv2
+    h, w = g.shape[:2]
+    t = np.array(filt["template"], np.float32)
+    scale = float(filt["um_per_px"]) / float(d.get("um-per-px", filt["um_per_px"]))
+    side = max(3, 2 * int(round(t.shape[0] * scale / 2)) + 1)
+    if side != t.shape[0]:
+        t = cv2.resize(t, (side, side), interpolation=cv2.INTER_LINEAR)
+    bead_px = float(filt["bead_px"]) * scale
+    if h < side or w < side:
+        return []
+    bg, sd = gui_broad_field(g, d)
+    cut = 0.0 if all_peaks else gui_filter_cutoff(d)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                  (max(3, int(bead_px) | 1),) * 2)
+    step, pad = 1024, side
+    out = []
+    for y0 in range(0, h, step):
+        a, b = max(y0 - pad, 0), min(y0 + step + pad, h)
+        if b - a < side:
+            continue
+        f = gui_flat_window(g, bg, sd, 0, a, w, b)
+        cc = cv2.matchTemplate(f, t, cv2.TM_CCOEFF_NORMED)
+        peak = (cc >= cv2.dilate(cc, k)) & (cc > max(cut, 1e-6))
+        ys, xs = np.nonzero(peak)
+        for yy, xx in zip(ys, xs):
+            cy = yy + side // 2 + a
+            if not (y0 <= cy < min(y0 + step, h)):
+                continue                       # belongs to another strip
+            cx = xx + side // 2
+            rec = (float(cx), float(cy), bead_px, False)
+            out.append(rec + (float(cc[yy, xx]),) if all_peaks else rec)
+    del bg
+    return out
+
+
+def gui_detect_trained(g, d: dict, filt: dict) -> list:
+    """The trained branch of gui_detect_region: see the note above."""
+    if filt["kind"] == "template":
+        return gui_detect_template(g, d, filt)
+    cands = gui_detect_broad(g, {**d, "broad-stringency": 100})
+    X = gui_blob_features(g, d, cands)
+    s = gui_filter_score(filt, X)
+    cut = gui_filter_cutoff(d)
+    return [c for c, sc in zip(cands, s) if sc >= cut]
 
 
 def gui_window_px(state, cfg: dict) -> tuple:
@@ -4347,12 +4596,27 @@ def gui_clearance(g, d: dict, found: list, cap_px: float) -> list:
 
 
 def gui_merge(state: GuiState, new: list, cfg: dict) -> int:
-    """Add objects not already known (boxes may overlap)."""
+    """Add objects not already known (boxes may overlap). A clump that
+    an earlier pass left where this pass found a bead gives way to the
+    bead: the neighbour sweep marks whatever a stricter slider rejected
+    as a clump, and without this a looser slider could never bring the
+    bead back on the same box. Everything added is appended, so the
+    last `n` objects are the new ones (n returned)."""
     tol = float(cfg.get("manual-selection", {}).get("match-radius-px", 12))
     if state.beads and new:
         tree = cKDTree(np.array([[b.x_px, b.y_px] for b in state.beads]))
-        d, _ = tree.query(np.array([[b.x_px, b.y_px] for b in new]))
-        new = [b for b, dd in zip(new, d) if dd > tol]
+        d, j = tree.query(np.array([[b.x_px, b.y_px] for b in new]))
+        keep, swapped = [], []
+        for b, dd, jj in zip(new, d, j):
+            if dd > tol:
+                keep.append(b)
+            elif (state.beads[jj].clumped and not b.clumped
+                  and not state.beads[jj].manual and jj not in swapped):
+                swapped.append(int(jj))            # the clump gives way
+                keep.append(b)
+        for jj in sorted(swapped, reverse=True):
+            state.beads.pop(jj)
+        new = keep
     state.beads.extend(new)
     return len(new)
 
@@ -5043,20 +5307,52 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         v["method"].set("default")
     elif v["flat_field"].get():
         v["method"].set("quick")
-    if v["method"].get() not in ("default", "quick", "strict", "broad"):
+    if v["method"].get() == "trained" and state.filter is None:
+        v["method"].set("default")          # no filter loaded in this run
+    if v["method"].get() not in ("default", "quick", "strict", "broad",
+                                 "trained"):
         v["method"].set("default")          # a save made under the old names
+    upload_entry = "upload filter template..."
     gui_dropdown(side, v["method"],
-                 ["default", "quick", "strict", "broad"]).pack(
+                 ["default", "quick", "strict", "broad",
+                  upload_entry]).pack(
         anchor="w", pady=(2, 2), fill="x")
-    gui_small(side, "default   global threshold sweep\n"
+    # the loaded filter's name, under the dropdown while it is in use
+    filter_lbl = gui_small(side, "", justify="left", anchor="w")
+    help_lbl = gui_small(side, "default   global threshold sweep\n"
                     "quick      flat-field subtraction\n"
                     "strict     both combined, keep the best 5 %\n"
                     "broad      any faint round blob in the size\n"
                     "              window, all accepted -- reject by hand;\n"
                     "              the slider below keeps only the\n"
-                    "              stronger blobs (100 = all of them)",
-              justify="left", anchor="w").pack(anchor="w", fill="x",
-                                               pady=(0, 4))
+                    "              stronger blobs (100 = all of them)\n"
+                    "upload    a filter trained with FilterTrainer;\n"
+                    "              broad's candidates re-scored (or the\n"
+                    "              trained template matched), the slider\n"
+                    "              keeps the stronger ones (100 = all)",
+              justify="left", anchor="w")
+    help_lbl.pack(anchor="w", fill="x", pady=(0, 4))
+
+    def upload_filter() -> None:
+        """The last dropdown entry: pick a FilterTrainer .json."""
+        start = HERE / "FilterTrainer" / "filters"
+        p = filedialog.askopenfilename(
+            parent=win, title="Open a trained filter",
+            initialdir=str(start if start.is_dir() else HERE),
+            filetypes=[("trained filter", "*_blobfilter.json"),
+                       ("json", "*.json"), ("all files", "*.*")])
+        prev = "trained" if state.filter is not None else "default"
+        if not p:
+            v["method"].set(prev)
+            return
+        try:
+            state.filter = gui_filter_load(Path(p))
+        except (OSError, ValueError) as e:
+            set_status(f"filter not loaded: {e}")
+            v["method"].set(prev)
+            return
+        v["method"].set("trained")
+        set_status(f"filter loaded: {Path(p).name} ({state.filter['kind']})")
     # broad stringency slider: shown only while the broad method is
     # selected (see GUI_BROAD_SWING)
     trow = tk.Frame(side, bg=GUI_BG)
@@ -5075,10 +5371,20 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
 
     def step_state(*_a) -> None:
         if trow.winfo_exists():             # the trace outlives the window
-            if v["method"].get() == "broad":
+            m = v["method"].get()
+            if m == upload_entry:
+                win.after(1, upload_filter)  # the dialog, after the menu closes
+                return
+            if m in ("broad", "trained"):
                 trow.pack(anchor="w", fill="x", pady=(0, 8), before=analyze_btn)
             else:
                 trow.pack_forget()
+            if m == "trained" and state.filter is not None:
+                filter_lbl.config(text=f"filter: {Path(state.filter['path']).name}"
+                                       f"\n({state.filter['kind']})")
+                filter_lbl.pack(anchor="w", fill="x", before=help_lbl)
+            else:
+                filter_lbl.pack_forget()
     v["method"].trace_add("write", step_state)
     step_state()
     # progress of the analysis, under the button (see GuiProgress)
@@ -5274,25 +5580,30 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
             set_status("draw a box first: left-drag on the image")
             return
         method = v["method"].get()
+        if method == "trained" and state.filter is None:
+            set_status("no filter loaded: pick 'upload filter template...'")
+            return
         bar_start("analyze", 3)
         bar_step(f"detecting ({method})")
         cfg = gui_size_limits_px(state,
                                  gui_apply_params(copy.deepcopy(state.cfg), v))
-        if method == "broad":
+        if method in ("broad", "trained"):
             cfg["detection"]["broad-diameter-px"] = gui_window_px(state, cfg)
             cfg["detection"]["broad-stringency"] = min(
                 max(gui_float(v["broad_stringency"], 100), 1), 100)
+        if method == "trained":
+            cfg["detection"]["trained-filter"] = state.filter
+            cfg["detection"]["um-per-px"] = gui_transform(state, cfg).um_per_px
         # how far gui_clearance looks, in px: 3 x the isolation window
         cfg["detection"]["clear-cap-px"] = max(
             3 * float(cfg["min-bead-separation"])
             / gui_transform(state, cfg).um_per_px, 100)
         found = gui_detect_region(state.img, box.box, cfg, method)
-        n_before = len(state.beads)
-        added = gui_merge(state, found, cfg)
-        if method == "broad":
+        added = gui_merge(state, found, cfg)      # appended at the end
+        if method in ("broad", "trained"):
             # the lenient pass: everything it found starts accepted, as a
             # manual pick, and is checked by hand (clumps stay clumps)
-            for b in state.beads[n_before:]:
+            for b in state.beads[len(state.beads) - added:]:
                 if not b.clumped:
                     gui_set_manual(b, "accept")
                     b.source = "broad"    # shots sit off the whole blob

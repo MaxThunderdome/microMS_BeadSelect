@@ -8,3 +8,6 @@
 !microms/**
 __pycache__/
 *.py[cod]
+
+# FilterTrainer/ is its own git repository (see FilterTrainer/.gitignore)
+FilterTrainer/
