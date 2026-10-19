@@ -129,6 +129,19 @@ def banner(cmd: str) -> None:
 
 _BAR = None
 
+# GUI progress bars (GuiProgress) register here; each bar_* call below
+# hands them the current Bar, or None when it is done. Called on the
+# main thread only, which is where tk must be touched.
+_BAR_HOOKS: list = []
+
+
+def _bar_notify(bar) -> None:
+    for hook in list(_BAR_HOOKS):
+        try:
+            hook(bar)
+        except Exception:                 # a dead window must not stop a run
+            _BAR_HOOKS.remove(hook)
+
 
 class _BarStdout:
     """sys.stdout wrapper: starts a new line before anything that is
@@ -253,17 +266,20 @@ def bar_start(title: str, steps: int) -> Bar:
     if _BAR is not None:
         _BAR.done()
     _BAR = Bar(title, steps)
+    _bar_notify(_BAR)
     return _BAR
 
 
 def bar_step(label: str) -> None:
     if _BAR is not None:
         _BAR.step(label)
+        _bar_notify(_BAR)
 
 
 def bar_tick(i: int, n: int) -> None:
     if _BAR is not None:
         _BAR.tick(i, n)
+        _bar_notify(_BAR)
 
 
 def bar_done() -> None:
@@ -271,6 +287,7 @@ def bar_done() -> None:
     if _BAR is not None:
         _BAR.done()
         _BAR = None
+        _bar_notify(None)
 
 
 def preload_gui_libs() -> None:
@@ -406,10 +423,9 @@ CONFIG = {
         "distance-reference": "edge",
         "edge-offset": 15,
         "laser-distance": 60,
-        # "edge" only: clamp so one bad measurement cannot fling shots
-        # across the slide.
-        "min-radius": 25,
-        "max-radius": 70,
+        # The 25-70 um radius clamp that used to guard "edge" placement
+        # was removed on 2026-10-19: every ring sits at the measured or
+        # drawn radius plus the offsets, whatever that radius is.
 
         # Shot count per bead.
         #
@@ -452,9 +468,12 @@ CONFIG = {
     "beam-scan": True,
     "beam-scan-um": 20,
 
-    # Drop a shot whose crater would overlap the bead itself or a
-    # neighbour. Genuine overlap only, never a cosmetic margin.
-    "enforce-bead-clearance": True,
+    # Drop a shot whose crater would overlap the bead itself, a
+    # neighbour or an adjacent shot. OFF since 2026-10-19: the code only
+    # chooses shot CENTRES -- ring 1 at edge-offset from the bead edge,
+    # ring 2 at ring2-offset-um beyond it -- and overlapping craters are
+    # accepted. The checks stay in place_shots for anyone who wants them.
+    "enforce-bead-clearance": False,
 
     # ---- registration -------------------------------------------------
     # Similarity, not affine: an affine fit through exactly 3 fiducials
@@ -909,6 +928,9 @@ class Bead:
     reject_reason: str = ""
     reject_category: str = ""
     manual: str = ""
+    # "drawn" (manual selection circle) or "broad" (broad method, halo
+    # included): the circle IS the bead, so shot_radius trusts it
+    source: str = ""
     shots: list = field(default_factory=list)
 
 
@@ -1131,7 +1153,8 @@ def load_beads_csv(path: Path) -> list[Bead]:
             out.append(Bead(float(row["x_px"]), float(row["y_px"]),
                             float(row["diameter_px"]),
                             clumped=str(row.get("clumped", "")).strip().lower()
-                            in ("1", "true", "yes")))
+                            in ("1", "true", "yes"),
+                            source=str(row.get("source", "") or "").strip()))
     return out
 
 
@@ -1287,9 +1310,8 @@ def shot_radius(bead: Bead, cfg: dict) -> float:
     if sp["distance-reference"] == "center":
         return float(sp["laser-distance"])
 
+    # the bead's own radius, measured or drawn, with no clamp (2026-10-19)
     r = bead.diameter_um / 2.0
-    r = min(max(r, float(sp.get("min-radius", 0))),
-            float(sp.get("max-radius", 1e9)))
     return r + float(sp["edge-offset"])
 
 
@@ -1416,7 +1438,8 @@ def place_shots(beads: list[Bead], cfg: dict,
 
         # Genuine crater-crater overlap between shots on the same bead.
         # Nothing is trimmed for a cosmetic margin -- only real overlap.
-        live = [s for s in ring if not s.dropped]
+        # Same switch as the checks above (enforce-bead-clearance).
+        live = [s for s in ring if not s.dropped] if enforce else []
         for m in range(len(live)):
             for n in range(m + 1, len(live)):
                 d = math.hypot(live[m].x_um - live[n].x_um,
@@ -2168,6 +2191,107 @@ def draw_zoom(path: Path, beads: list[Bead], cfg: dict, T: Transform,
     return True
 
 
+DIST_MAX_BEADS = 4          # beads measured in the distance picture
+
+
+def draw_distances(path: Path, beads: list[Bead], cfg: dict, T: Transform,
+                   scan: Path | None) -> bool:
+    """
+    Quick size measurement: a close-up of a few accepted beads with
+    their shots, each bead labelled in thin black text with its radius
+    in microns (centre to the drawn outline) and, per ring, the shot
+    distance from the centre -- a line from the centre to the outline
+    and to one live shot of each ring. The window is centred on the
+    patch holding the most accepted beads, so nothing sits in a corner.
+    Same rendering as draw_zoom; the other pictures are untouched.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return False
+    if scan is None or not scan.exists():
+        return False
+    acc = [b for b in beads if b.accepted and b.shots]
+    if not acc:
+        return False
+    img = cv2.imread(str(scan), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return False
+
+    z = cfg["output"]
+    w = int(z.get("zoom-window-px", 700))
+    h = int(w * 0.66)
+    sc = int(z.get("zoom-scale", 3))
+    xs = np.array([b.x_px for b in acc])
+    ys = np.array([b.y_px for b in acc])
+
+    # the window holding the most accepted beads, then centred on them
+    best, bx, by = -1, float(xs.min()), float(ys.min())
+    for cx in np.linspace(xs.min(), max(xs.max() - w, xs.min()), 40):
+        for cy in np.linspace(ys.min(), max(ys.max() - h, ys.min()), 30):
+            hit = ((xs >= cx) & (xs < cx + w) & (ys >= cy) & (ys < cy + h))
+            if int(hit.sum()) > best:
+                best, bx, by = int(hit.sum()), float(cx), float(cy)
+    hit = ((xs >= bx) & (xs < bx + w) & (ys >= by) & (ys < by + h))
+    cx, cy = float(xs[hit].mean()), float(ys[hit].mean())
+    x0 = int(min(max(cx - w / 2, 0), max(img.shape[1] - w, 0)))
+    y0 = int(min(max(cy - h / 2, 0), max(img.shape[0] - h, 0)))
+    x1, y1 = min(x0 + w, img.shape[1]), min(y0 + h, img.shape[0])
+
+    vis = cv2.resize(cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_GRAY2BGR),
+                     ((x1 - x0) * sc, (y1 - y0) * sc),
+                     interpolation=cv2.INTER_LANCZOS4)
+    crater_px = footprint_um(cfg) / T.um_per_px
+
+    def at(px, py):
+        return int((px - x0) * sc), int((py - y0) * sc)
+
+    font, fs, black = cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0)
+    shown = sorted((b for b in acc if x0 < b.x_px < x1 and y0 < b.y_px < y1),
+                   key=lambda b: math.hypot(b.x_px - cx, b.y_px - cy))
+    for b in shown[:DIST_MAX_BEADS]:
+        c = at(b.x_px, b.y_px)
+        r_px = max(int(b.diameter_px / 2 * sc), 3)
+        cv2.circle(vis, c, r_px, (0, 170, 0), 1)
+        for sh in b.shots:
+            px = T.um_to_px([sh.x_um, sh.y_um])[0]
+            pt = at(px[0], px[1])
+            rr = max(int(crater_px / 2 * sc), 3)
+            if sh.dropped:
+                cv2.circle(vis, pt, rr, (0, 165, 255), 1)
+            else:
+                cv2.circle(vis, pt, rr, (230, 120, 0), -1)
+        # bead radius: centre to the outline, straight up
+        cv2.line(vis, c, (c[0], c[1] - r_px), black, 1, cv2.LINE_AA)
+        cv2.putText(vis, f"r {b.diameter_um / 2:.0f} um",
+                    (c[0] + 4, c[1] - r_px - 6), font, fs, black, 1,
+                    cv2.LINE_AA)
+        # one live shot per ring (distinct distances from the centre)
+        rings: dict = {}
+        for sh in b.shots:
+            if not sh.dropped:
+                dist = round(math.hypot(sh.x_um - b.x_um, sh.y_um - b.y_um))
+                rings.setdefault(dist, sh)
+        for k, (dist, sh) in enumerate(sorted(rings.items())):
+            px = T.um_to_px([sh.x_um, sh.y_um])[0]
+            pt = at(px[0], px[1])
+            cv2.line(vis, c, pt, black, 1, cv2.LINE_AA)
+            # label just past the shot, on the far side from the centre
+            rr = max(int(crater_px / 2 * sc), 3)
+            dx, dy = pt[0] - c[0], pt[1] - c[1]
+            n = max(math.hypot(dx, dy), 1.0)
+            lx = int(pt[0] + dx / n * (rr + 4)) + (0 if dx >= 0 else -70)
+            ly = int(pt[1] + dy / n * (rr + 4)) + (12 if dy >= 0 else -4)
+            cv2.putText(vis, f"shot {dist:.0f} um", (lx, ly),
+                        font, fs, black, 1, cv2.LINE_AA)
+
+    cv2.putText(vis, f"green = bead outline   blue = shot   orange = dropped"
+                     f"   black = distance from the bead centre, um",
+                (6, 16), font, fs, black, 1, cv2.LINE_AA)
+    cv2.imwrite(str(path), vis)
+    return True
+
+
 # =====================================================================
 # FIDUCIAL PICKER
 # =====================================================================
@@ -2749,6 +2873,9 @@ def run(cfg: dict) -> None:
         zp = prefix.with_name("shot_placement_zoom.png")
         if draw_zoom(zp, beads, cfg, T, scan):
             print(f"Wrote {zp.name}")
+        dp = prefix.with_name("shot_distances.png")
+        if draw_distances(dp, beads, cfg, T, scan):
+            print(f"Wrote {dp.name}  (bead radius and shot distances, um)")
 
     bar_step("writing instrument files")
     if cfg["output"].get("write-flex-txt", True) and ordered:
@@ -2857,6 +2984,10 @@ def review(cfg: dict) -> None:
     if draw_zoom(zp, beads, cfg, T, scan):
         say(f"Wrote {zp.relative_to(HERE)}  (close-up of the densest "
             f"patch of selected beads)")
+    dp = outdir / "review_distances.png"
+    if draw_distances(dp, beads, cfg, T, scan):
+        say(f"Wrote {dp.relative_to(HERE)}  (bead radius and shot "
+            f"distances, um)")
     say("Nothing exported. Run 'run' to write the target files.")
     bar_done()
     return beads, shots, T
@@ -3342,6 +3473,60 @@ class GuiBoxTool:
             self.on_change(None)
 
 
+GUI_PROGRESS = "#2ca02c"     # progress bars: the accepted-bead green
+
+
+class GuiProgress:
+    """
+    A progress bar in a window, fed by the console Bar through
+    _BAR_HOOKS: it shows the bars whose title is in `titles` ("analyze",
+    or "review" and "run") and empties itself when they finish. Redrawn
+    at most every 50 ms, and only between the pipeline's own steps --
+    one long OpenCV call cannot report progress, so the bar holds its
+    last value until the next step.
+    """
+
+    def __init__(self, parent, titles: tuple, height: int = 14):
+        import time
+        self.titles, self.height = titles, height
+        self.widget = tk.Canvas(parent, height=height, bg=GUI_BOX,
+                                highlightthickness=1,
+                                highlightbackground=GUI_DARK)
+        self.fill = self.widget.create_rectangle(0, 0, 0, height,
+                                                 fill=GUI_PROGRESS, width=0)
+        self.text = self.widget.create_text(4, height // 2, anchor="w",
+                                            text="", font=F_SMALL, fill=GUI_TXT)
+        self._last, self._stage = 0.0, None
+        self._time = time
+        _BAR_HOOKS.append(self.update)
+        self.widget.bind("<Destroy>", self._gone, add="+")
+
+    def _gone(self, _e=None):
+        if self.update in _BAR_HOOKS:
+            _BAR_HOOKS.remove(self.update)
+
+    def update(self, bar) -> None:
+        if not self.widget.winfo_exists():
+            raise RuntimeError("progress bar gone")   # _bar_notify drops us
+        if bar is None:
+            frac, label = 0.0, ""
+        elif bar.title not in self.titles:
+            return
+        else:
+            frac = (bar.i - 1 + (bar.frac or 0.0)) / bar.steps if bar.i else 0.0
+            label = f"{bar.title}: {bar.label}  {frac * 100:3.0f}%"
+        now = self._time.time()
+        stage = (label.split("  ")[0], bar is None)
+        if stage == self._stage and now - self._last < 0.05:
+            return
+        self._stage, self._last = stage, now
+        w = max(self.widget.winfo_width(), 1)
+        self.widget.coords(self.fill, 0, 0, int(w * min(max(frac, 0.0), 1.0)),
+                           self.height)
+        self.widget.itemconfig(self.text, text=label)
+        self.widget.update_idletasks()
+
+
 GUI_PENDING = "#1f77b4"      # a drawn circle not yet accepted (blue)
 GUI_ARROW_STEP_PX = 1        # one arrow press moves it one image pixel
 GUI_ARROW_PAN = 0.10         # fiducial window: one press pans 10 % of the view
@@ -3349,29 +3534,40 @@ GUI_ARROW_PAN = 0.10         # fiducial window: one press pans 10 % of the view
 
 class GuiCircleTool:
     """
-    Manual selection: press on the bead centre, drag outwards to size
-    the circle, release. The circle stays blue -- not yet a bead -- and
-    the arrow keys move it GUI_ARROW_STEP_PX image pixels per press;
-    Enter sets it (on_set(x, y, diameter_px) makes it an accepted bead,
-    drawn green), Esc drops it. Active only while `mode_var` is on and
-    `blocked()` (the zoom box, say) is not.
+    Manual selection: click the bead centre and a circle of the
+    parameters window's bead size (default_r() pixels) appears there --
+    a thin dotted blue outline with a cross at the centre, no fill, so
+    the bead stays visible. While it is pending:
+      * the arrow keys move it GUI_ARROW_STEP_PX image pixels per press;
+      * press anywhere on the image and drag: the radius grows by the
+        drag's component away from the centre and shrinks toward it
+        (a global radius control -- no need to grab the outline);
+      * Enter sets it: on_enter(x, y, diameter_px) -- by default on_set,
+        which makes a new accepted bead, drawn like every other one;
+      * Esc drops it.
+    A fresh click starts a new circle only while `mode_var` (Manual
+    selection) is on and `blocked()` (the zoom box) is not. begin() opens
+    the same editing on an existing bead -- the double-click of Manual
+    accept / resizing -- with its own on_enter; `editing` is then True
+    whatever mode_var says.
     """
 
     def __init__(self, fig, ax, mode_var, on_set, status, um_per_px,
-                 blocked=lambda: False):
+                 blocked=lambda: False, default_r=lambda: 10.0):
         from matplotlib.patches import Circle
         self.fig, self.ax, self.mode_var = fig, ax, mode_var
         self.on_set, self.status, self.um_per_px = on_set, status, um_per_px
-        self.blocked = blocked
-        self.centre = None                  # (x, y) while blue
+        self.blocked, self.default_r = blocked, default_r
+        self.on_enter = on_set
+        self.centre = None                  # (x, y) while pending
         self.r = 0.0
-        self.dragging = False
-        self.patch = Circle((0, 0), 1, fill=True, fc=GUI_PENDING, alpha=0.25,
-                            ec=GUI_PENDING, lw=2.0, visible=False)
-        self.ring = Circle((0, 0), 1, fill=False, ec=GUI_PENDING, lw=2.0,
-                           visible=False)
-        ax.add_patch(self.patch)
+        self.editing = False                # begin() on an existing bead
+        self.drag = None                    # (press x, press y, r0, ux, uy)
+        self.ring = Circle((0, 0), 1, fill=False, ec=GUI_PENDING, lw=0.8,
+                           ls=":", visible=False)
         ax.add_patch(self.ring)
+        self.cross = ax.plot([], [], "+", color=GUI_PENDING, ms=8, mew=0.8,
+                             visible=False)[0]
         fig.canvas.mpl_connect("button_press_event", self._press)
         fig.canvas.mpl_connect("motion_notify_event", self._motion)
         fig.canvas.mpl_connect("button_release_event", self._release)
@@ -3379,51 +3575,63 @@ class GuiCircleTool:
 
     @property
     def pending(self):
-        return self.centre if (self.centre and not self.dragging) else None
+        return self.centre
 
     def _show(self):
-        for p in (self.patch, self.ring):
-            p.center = self.centre
-            p.set_radius(max(self.r, 0.5))
-            p.set_visible(True)
+        self.ring.center = self.centre
+        self.ring.set_radius(max(self.r, 0.5))
+        self.ring.set_visible(True)
+        self.cross.set_data([self.centre[0]], [self.centre[1]])
+        self.cross.set_visible(True)
         self.fig.canvas.draw_idle()
         d_um = 2 * self.r * self.um_per_px()
         self.status(f"circle at x {self.centre[0]:.0f}  y {self.centre[1]:.0f}"
                     f"   diameter {d_um:.0f} um ({2 * self.r:.0f} px)"
-                    + ("" if self.dragging else
-                       "   --   arrow keys move it, Enter accepts, Esc drops it"))
+                    "   --   arrows move it, press-drag anywhere resizes it, "
+                    "Enter sets it, Esc drops it")
 
     def drop(self, why: str = ""):
-        self.centre, self.r, self.dragging = None, 0.0, False
-        self.patch.set_visible(False)
+        self.centre, self.r, self.drag = None, 0.0, None
+        self.editing, self.on_enter = False, self.on_set
         self.ring.set_visible(False)
+        self.cross.set_visible(False)
         self.fig.canvas.draw_idle()
         if why:
             self.status(why)
 
+    def begin(self, x: float, y: float, r: float, on_enter) -> None:
+        """Edit an existing bead: its circle becomes the pending one."""
+        self.centre, self.r, self.editing = (x, y), max(r, 0.5), True
+        self.on_enter = on_enter
+        self._show()
+
     def _press(self, ev):
-        if (ev.button != 1 or not self.mode_var.get() or ev.inaxes is not self.ax
-                or ev.xdata is None or self.blocked()):
+        if (ev.button != 1 or ev.inaxes is not self.ax or ev.xdata is None
+                or self.blocked()):
             return
-        # a new press replaces a blue circle that was never accepted
-        self.centre, self.r, self.dragging = (ev.xdata, ev.ydata), 0.0, True
+        if self.centre is not None:
+            # resize: the radius follows the drag along the line from
+            # the centre through the press point (outward = bigger)
+            ux, uy = ev.xdata - self.centre[0], ev.ydata - self.centre[1]
+            n = math.hypot(ux, uy)
+            ux, uy = (ux / n, uy / n) if n > 1e-9 else (1.0, 0.0)
+            self.drag = (ev.xdata, ev.ydata, self.r, ux, uy)
+            return
+        if not self.mode_var.get():
+            return
+        self.centre, self.r = (ev.xdata, ev.ydata), float(self.default_r())
         self._show()
 
     def _motion(self, ev):
-        if not self.dragging or ev.xdata is None:
+        if self.drag is None or ev.xdata is None:
             return
-        self.r = math.hypot(ev.xdata - self.centre[0], ev.ydata - self.centre[1])
+        x0, y0, r0, ux, uy = self.drag
+        self.r = max(r0 + (ev.xdata - x0) * ux + (ev.ydata - y0) * uy, 1.0)
         self._show()
 
     def _release(self, ev):
-        if ev.button != 1 or not self.dragging:
-            return
-        self.dragging = False
-        if self.r < 1.0:
-            self.drop("press on the bead centre and drag outwards to size "
-                      "the circle")
-            return
-        self._show()
+        if ev.button == 1 and self.drag is not None:
+            self.drag = None
 
     def _key(self, ev):
         if self.pending is None:
@@ -3436,9 +3644,9 @@ class GuiCircleTool:
                            self.centre[1] + step[1] * GUI_ARROW_STEP_PX)
             self._show()
         elif ev.key == "enter":
-            (x, y), r = self.centre, self.r
+            (x, y), r, done = self.centre, self.r, self.on_enter
             self.drop()
-            self.on_set(x, y, 2 * r)
+            done(x, y, 2 * r)
         elif ev.key == "escape":
             self.drop("circle dropped")
 
@@ -3680,7 +3888,9 @@ GUI_DEFAULTS = {
     "max_points": "1000",
     "matrix": "yes",
     "method": "default",
-    "threshold_step": "10",         # threshold method only; seeded from CONFIG
+    "broad_stringency": "100",      # broad method only: 100 = as found, lower = stricter
+    "laser_offset": "15",           # first ring offset from the bead edge, um; seeded from CONFIG
+    "ring2_offset": "15",           # second ring offset from ring 1, um
     "shot_pattern": "ring",         # seeded from CONFIG shot-placement
     "acq_method": "",               # .run acqMethod; seeded from CONFIG
     "run_directory": "",            # .run directory; seeded from CONFIG
@@ -3723,6 +3933,16 @@ GUI_BROAD_SIGNIF = 3.0
 # 2:1 ellipse, a line near 0). On the 261008 no-matrix scans, blobs
 # below 0.55 were almost all pieces of the scanner streaks.
 GUI_BROAD_FILL = 0.55
+# ...and the stringency slider of the bead window (100 = everything the
+# steps above found, as before). Below 100 a blob must also SPAN at
+# least GUI_BROAD_SWING x (1 - stringency / 100) noise SDs from its
+# darkest to its lightest pixel of the flat field -- the threshold-step
+# idea: how many grey levels the blob covers. Measured on the 261008
+# test3038 scan (x 17500-18130, y 5260-5615): the two beads span 47
+# and 49 SD (dark core plus bright halo), the strongest speck 18, the
+# faint ring 5. So 75 drops the faint ones, 50 and below keep the beads
+# only.
+GUI_BROAD_SWING = 40.0
 
 SAVES_DIR = HERE / "SAVES"
 LAST_SETTINGS = SAVES_DIR / "last_settings.json"
@@ -3765,7 +3985,7 @@ def gui_make_vars(master, cfg: dict) -> dict:
     v["scan"].set(str(cfg["input"]["scan"]))
     v["bead_um"].set(f"{float(cfg['bead-diameter']):g}")
     v["isolation_um"].set(f"{float(cfg['min-bead-separation']):g}")
-    v["threshold_step"].set(f"{int(cfg['detection']['threshold-step'])}")
+    v["laser_offset"].set(f"{float(cfg['shot-placement'].get('edge-offset', 15)):g}")
     v["shot_pattern"].set(str(cfg["shot-placement"].get("shot-pattern", "ring")))
     run_hdr = cfg["output"].get("run") or {}
     v["acq_method"].set(str(run_hdr.get("acqMethod", "")))
@@ -3801,11 +4021,15 @@ def gui_apply_params(cfg: dict, v: dict) -> dict:
     cfg["min-bead-separation"] = (
         gui_float(v["isolation_um"], float(cfg["min-bead-separation"]))
         if v["isolation_on"].get() else 0.0)
-    cfg["detection"]["method"] = ("blob" if v["method"].get() in ("default", "threshold")
+    cfg["detection"]["method"] = ("blob" if v["method"].get() == "default"
                                   else "flatfield")
     cfg["gui-max-points"] = int(gui_float(v["max_points"], 1000))
     cfg["gui-method"] = v["method"].get()
     cfg["shot-placement"]["shot-pattern"] = v["shot_pattern"].get()
+    sp = cfg["shot-placement"]
+    sp["edge-offset"] = gui_float(v["laser_offset"], float(sp.get("edge-offset", 15)))
+    sp["ring2-offset-um"] = gui_float(v["ring2_offset"],
+                                      float(sp.get("ring2-offset-um", 30)))
     return cfg
 
 
@@ -3873,7 +4097,7 @@ def gui_detect_region(img, box, cfg: dict, method: str) -> list:
             extra = [f for f, d_ in zip(extra, dd) if d_ > tol]
         return found + list(extra)
 
-    if method in ("default", "threshold"):
+    if method == "default":
         found = gui_dark_only(g, d, _detect_blobdetector(g, d))   # sweep
     elif method == "quick":
         found = list(_detect_flatfield(g, d))
@@ -3951,14 +4175,16 @@ def gui_detect_broad(g, d: dict) -> list:
        smallest bead), fill holes so a ring counts whole, and drop
        everything thinner than about half the smallest bead (opening)
        -- scanner streaks, hairs, specks;
-    3. keep each remaining blob whose equivalent diameter is inside the
-       size window and that fills at least GUI_BROAD_FILL of its
-       enclosing circle. Without matrix a bead shows as a dark core in
-       a bright scanner halo, and the blob is the whole of it: up to
-       GUI_BODY_FACTOR x the bead (measured on these scans, see
-       GUI_BODY_FACTOR), so the window's upper end is stretched by that
-       factor. The diameter reported is the whole blob, halo included,
-       so the shots land outside the halo.
+    3. keep each remaining blob that fills at least GUI_BROAD_FILL of
+       its enclosing circle and whose equivalent diameter is inside a
+       relaxed size window: the loose pre-filter every method uses
+       (half the smallest bead to twice the largest, as in
+       gui_size_limits_px), its upper end stretched again by
+       GUI_BODY_FACTOR -- without matrix a bead shows as a dark core in
+       a bright scanner halo and the blob is the whole of it. The
+       diameter reported is the whole blob, halo included, so the shots
+       land outside the halo. The kernels in step 2 follow the bead
+       window itself.
 
     Returns (x, y, diameter_px, False) like the other detectors; the
     bead window marks these as accepted, to be checked by hand.
@@ -3966,12 +4192,13 @@ def gui_detect_broad(g, d: dict) -> list:
     import cv2
     h, w = g.shape[:2]
     dmin, dmax = (float(v) for v in d["broad-diameter-px"])
-    dmax = max(dmax * GUI_BODY_FACTOR, dmin + 1)     # bead + its halo
+    acc_lo = 0.5 * dmin                                  # relaxed window
+    acc_hi = max(2.0 * dmax * GUI_BODY_FACTOR, acc_lo + 1)   # + the halo
 
     def odd(v):
         return max(3, 2 * int(round(v / 2)) + 1)
 
-    k = min(max(2 * int(1.5 * dmax / 4) + 1, 3), 255)
+    k = min(max(2 * int(1.5 * acc_hi / 4) + 1, 3), 255)
     bg = cv2.resize(cv2.medianBlur(cv2.resize(
         g, (max(w // 4, 1), max(h // 4, 1)), interpolation=cv2.INTER_AREA),
         k), (w, h), interpolation=cv2.INTER_LINEAR)
@@ -3993,7 +4220,8 @@ def gui_detect_broad(g, d: dict) -> list:
     m = np.zeros((h, w), np.uint8)
     for y0, f in flat_strips():
         m[y0:y0 + len(f)] = (np.abs(f) > GUI_BROAD_SIGNIF * sd) * np.uint8(255)
-    del bg
+    # stringency slider: required dark-to-light swing, 0 at 100 %
+    need = GUI_BROAD_SWING * (1.0 - float(d.get("broad-stringency", 100)) / 100.0)
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (odd(dmin / 3),) * 2))
     flood = cv2.copyMakeBorder(m, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
@@ -4005,8 +4233,8 @@ def gui_detect_broad(g, d: dict) -> list:
 
     n, lab, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
     side = np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT])
-    keep = np.nonzero((np.arange(n) > 0) & (side >= 0.5 * dmin)
-                      & (side <= 2 * dmax))[0]
+    keep = np.nonzero((np.arange(n) > 0) & (side >= 0.5 * acc_lo)
+                      & (side <= 2 * acc_hi))[0]
     out = []
     for c, i in enumerate(keep):
         bar_tick(c + 1, len(keep))
@@ -4022,14 +4250,23 @@ def gui_detect_broad(g, d: dict) -> list:
         if area <= 0:
             continue
         dd = 2 * math.sqrt(area / math.pi)
-        if not (dmin <= dd <= dmax):
+        if not (acc_lo <= dd <= acc_hi):
             continue                                # outside the size window
         _, rad = cv2.minEnclosingCircle(cnt)
         if rad <= 0 or area / (math.pi * rad * rad) < GUI_BROAD_FILL:
             continue                                # not even roughly round
+        if need > 0:
+            # the flat field over this blob only, as flat_strips made it
+            sl = (slice(y0, y0 + comp.shape[0]), slice(x0, x0 + comp.shape[1]))
+            fl = cv2.GaussianBlur(g[sl].astype(np.float32)
+                                  - bg[sl].astype(np.float32), (0, 0), 1.0)
+            vals = fl[comp > 0]
+            if (float(vals.max()) - float(vals.min())) / sd < need:
+                continue                            # too faint for the slider
         mo = cv2.moments(cnt)
         out.append((mo["m10"] / mo["m00"] + x0, mo["m01"] / mo["m00"] + y0,
                     dd, False))
+    del bg
     return out
 
 
@@ -4212,7 +4449,8 @@ def gui_bead_colour(b) -> str:
 def gui_beads_to_json(beads: list) -> list:
     rows = [{"x_px": round(b.x_px, 2), "y_px": round(b.y_px, 2),
              "diameter_px": round(b.diameter_px, 2),
-             "clumped": bool(b.clumped), "manual": b.manual}
+             "clumped": bool(b.clumped), "manual": b.manual,
+             "source": b.source}
             for b in beads]
     for b, row in zip(beads, rows):
         if hasattr(b, "clear_px") and math.isfinite(b.clear_px):
@@ -4227,6 +4465,7 @@ def gui_beads_from_json(rows: list) -> list:
         b = Bead(float(r["x_px"]), float(r["y_px"]), float(r["diameter_px"]),
                  clumped=bool(r.get("clumped", False)))
         b.manual = str(r.get("manual", "") or "")
+        b.source = str(r.get("source", "") or "")
         if r.get("clear_px") is not None:
             b.clear_px = float(r["clear_px"])
             b.clear_clump = bool(r.get("clear_clump", False))
@@ -4299,10 +4538,10 @@ def gui_write_run_inputs(state: GuiState, cfg: dict) -> Path:
     csv_path = gui_saves_dir() / f"{stem}_beads.csv"
     with open(csv_path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["x_px", "y_px", "diameter_px", "clumped"])
+        w.writerow(["x_px", "y_px", "diameter_px", "clumped", "source"])
         for b in state.beads:
             w.writerow([f"{b.x_px:.2f}", f"{b.y_px:.2f}",
-                        f"{b.diameter_px:.2f}", int(b.clumped)])
+                        f"{b.diameter_px:.2f}", int(b.clumped), b.source])
     save_manual([(b.x_px, b.y_px, "accept" if b.accepted else "reject")
                  for b in state.beads])
     cfg["input"]["beads"] = str(csv_path)
@@ -4412,7 +4651,8 @@ def gui_review_window(master, folder: Path):
     their shots) and review_zoom.png (close-up, every category), one at
     a time, with the usual zoom and drag."""
     import cv2
-    pics = [p for p in (folder / "review.png", folder / "review_zoom.png")
+    pics = [p for p in (folder / "review.png", folder / "review_zoom.png",
+                        folder / "review_distances.png")
             if p.exists()]
     if not pics:
         return None
@@ -4656,8 +4896,14 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     pinfo.pack(side="left", anchor="w", padx=(10, 0))
     p_name = gui_small(pinfo, "")
     p_name.pack(anchor="w", pady=(2, 0))
+    def cfg_now() -> dict:
+        """CONFIG with the window's values (laser offsets) applied, so
+        the pattern pictures show what run() will fire."""
+        import copy
+        return gui_apply_params(copy.deepcopy(state.cfg), v)
+
     gui_button(pinfo, "Laser shot pattern...",
-               lambda: gui_pattern_dialog(win, v, state.cfg)).pack(
+               lambda: gui_pattern_dialog(win, v, cfg_now())).pack(
                    anchor="w", pady=(4, 0))
     pattern_names = {k: name for k, name, _ in GUI_PATTERNS}
 
@@ -4668,13 +4914,76 @@ def gui_select_window(master, state: GuiState, on_continue=None):
         n = gui_pattern_draw(p_ax, key,
                              gui_float(v["bead_um"],
                                        float(state.cfg["bead-diameter"])),
-                             state.cfg)
+                             cfg_now())
         p_canvas.draw_idle()
         p_name.config(text=f"{pattern_names[key]}: {n} shots per bead")
 
     v["shot_pattern"].trace_add("write", redraw_pattern)
     v["bead_um"].trace_add("write", redraw_pattern)
     redraw_pattern()
+
+    # -- laser offset: first ring from the bead edge ------------------------
+    f = line("Laser offset")
+    gui_box(f, v["laser_offset"], 5).pack(side="left")
+    gui_small(f, "um  -- first ring offset from the bead edge").pack(
+        side="left", padx=(3, 0))
+
+    # -- second ring offset, only for patterns with a second ring -----------
+    # two linked boxes: from ring 1, and from the bead "center" = laser
+    # offset + ring offset; editing either updates the other
+    r2_row = row[0]
+    r2_lbl = gui_label(body, "Second ring offset")
+    r2_lbl.grid(row=r2_row, column=0, sticky="w", pady=4)
+    r2_frame = tk.Frame(body, bg=GUI_BG)
+    r2_frame.grid(row=r2_row, column=1, sticky="w", padx=(18, 0), pady=4)
+    row[0] += 1
+    gui_small(r2_frame, "from ring 1").pack(side="left")
+    gui_box(r2_frame, v["ring2_offset"], 5).pack(side="left", padx=(3, 3))
+    gui_small(r2_frame, "um").pack(side="left", padx=(0, 10))
+    gui_small(r2_frame, "from bead center").pack(side="left")
+    r2_total = tk.StringVar(win, "")
+    gui_box(r2_frame, r2_total, 5).pack(side="left", padx=(3, 3))
+    gui_small(r2_frame, "um").pack(side="left")
+    linking = [False]
+
+    def r2_from_ring(*_a):
+        if linking[0]:
+            return
+        linking[0] = True
+        try:
+            r2_total.set(f"{gui_float(v['laser_offset'], 0) + gui_float(v['ring2_offset'], 0):g}")
+        finally:
+            linking[0] = False
+
+    def r2_from_total(*_a):
+        if linking[0]:
+            return
+        linking[0] = True
+        try:
+            v["ring2_offset"].set(
+                f"{gui_float(r2_total, 0) - gui_float(v['laser_offset'], 0):g}")
+        finally:
+            linking[0] = False
+
+    def r2_shown(*_a):
+        if not r2_lbl.winfo_exists():
+            return
+        if v["shot_pattern"].get() in ("two-rings", "two-rings-12",
+                                       "dense-two-rings"):
+            r2_lbl.grid()
+            r2_frame.grid()
+        else:
+            r2_lbl.grid_remove()
+            r2_frame.grid_remove()
+
+    v["ring2_offset"].trace_add("write", r2_from_ring)
+    v["laser_offset"].trace_add("write", r2_from_ring)
+    r2_total.trace_add("write", r2_from_total)
+    v["shot_pattern"].trace_add("write", r2_shown)
+    v["laser_offset"].trace_add("write", redraw_pattern)
+    v["ring2_offset"].trace_add("write", redraw_pattern)
+    r2_from_ring()
+    r2_shown()
 
     # -- footnote + continue -----------------------------------------------
     gui_hrule(body).grid(row=row[0], column=0, columnspan=2, sticky="ew",
@@ -4709,6 +5018,9 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     # bottom bar, packed first so the image can never squeeze it out
     bottom = tk.Frame(win, bg=GUI_BG, padx=8, pady=6)
     bottom.pack(fill="x", side="bottom")
+    # save and review / run progress: a green bar along the bottom edge
+    win.progress = GuiProgress(bottom, ("review", "run"), height=px(14))
+    win.progress.widget.pack(side="bottom", fill="x", pady=(4, 0))
     status = gui_small(bottom, "left-drag = draw the box     "
                                "right-drag = move the view     "
                                "scroll / + / - / f = zoom / fit", anchor="w")
@@ -4731,43 +5043,47 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         v["method"].set("default")
     elif v["flat_field"].get():
         v["method"].set("quick")
-    if v["method"].get() not in ("default", "quick", "strict", "threshold",
-                                 "broad"):
+    if v["method"].get() not in ("default", "quick", "strict", "broad"):
         v["method"].set("default")          # a save made under the old names
     gui_dropdown(side, v["method"],
-                 ["default", "quick", "strict", "threshold", "broad"]).pack(
+                 ["default", "quick", "strict", "broad"]).pack(
         anchor="w", pady=(2, 2), fill="x")
     gui_small(side, "default   global threshold sweep\n"
                     "quick      flat-field subtraction\n"
                     "strict     both combined, keep the best 5 %\n"
-                    "threshold  default, with the step set below\n"
                     "broad      any faint round blob in the size\n"
-                    "              window, all accepted -- reject by hand",
+                    "              window, all accepted -- reject by hand;\n"
+                    "              the slider below keeps only the\n"
+                    "              stronger blobs (100 = all of them)",
               justify="left", anchor="w").pack(anchor="w", fill="x",
                                                pady=(0, 4))
-    # threshold step slider: live only for the threshold method, so
-    # default keeps CONFIG's step
+    # broad stringency slider: shown only while the broad method is
+    # selected (see GUI_BROAD_SWING)
     trow = tk.Frame(side, bg=GUI_BG)
     trow.pack(anchor="w", fill="x", pady=(0, 8))
-    step_lbl = gui_label(trow, "threshold step", font=F_SMALL)
-    step_lbl.pack(side="left")
-    step_bar = tk.Scale(trow, variable=v["threshold_step"], from_=1, to=50,
-                        orient="horizontal", resolution=1, length=px(120),
-                        font=F_SMALL, bg=GUI_BG, fg=GUI_TXT,
-                        troughcolor=GUI_BOX, activebackground=GUI_BOX,
-                        highlightthickness=0, bd=1, sliderrelief="raised")
-    step_bar.pack(side="left", padx=(6, 0))
+    gui_label(trow, "stringency", font=F_SMALL).pack(side="left")
+    tk.Scale(trow, variable=v["broad_stringency"], from_=1, to=100,
+             orient="horizontal", resolution=1, length=px(120),
+             font=F_SMALL, bg=GUI_BG, fg=GUI_TXT,
+             troughcolor=GUI_BOX, activebackground=GUI_BOX,
+             highlightthickness=0, bd=1, sliderrelief="raised").pack(
+                 side="left", padx=(6, 0))
+    gui_small(trow, "%").pack(side="left", padx=(2, 0))
+    analyze_btn = gui_button(side, "Analyze box", lambda: analyze(),
+                             font=F_BIG)
+    analyze_btn.pack(fill="x", pady=(4, 0))
 
     def step_state(*_a) -> None:
-        if step_bar.winfo_exists():         # the trace outlives the window
-            on = v["method"].get() == "threshold"
-            step_bar.config(state="normal" if on else "disabled",
-                            fg=GUI_TXT if on else GUI_DIM)
-            step_lbl.config(fg=GUI_TXT if on else GUI_DIM)
+        if trow.winfo_exists():             # the trace outlives the window
+            if v["method"].get() == "broad":
+                trow.pack(anchor="w", fill="x", pady=(0, 8), before=analyze_btn)
+            else:
+                trow.pack_forget()
     v["method"].trace_add("write", step_state)
     step_state()
-    gui_button(side, "Analyze box", lambda: analyze(),
-               font=F_BIG).pack(fill="x", pady=(4, 0))
+    # progress of the analysis, under the button (see GuiProgress)
+    win.analyze_bar = GuiProgress(side, ("analyze",), height=px(14))
+    win.analyze_bar.widget.pack(fill="x", pady=(3, 0))
     gui_small(side, "left-drag a box on the image, then analyze;\n"
                     "the box stays -- Clear box empties it so the same\n"
                     "area can be analyzed again with another method",
@@ -4780,16 +5096,19 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     draw_mode = tk.BooleanVar(win, False)
     gui_toggle(side, draw_mode, "Manual selection",
                command=lambda: draw_changed()).pack(fill="x", pady=(2, 0))
-    gui_small(side, "drag from the centre to size a circle; blue:\n"
-                    "arrows move it, Enter accepts, Esc drops",
+    gui_small(side, "click a bead centre: a bead-size dotted circle;\n"
+                    "arrows move it, press-drag anywhere resizes it,\n"
+                    "Enter sets it (green), Esc drops it",
               justify="left", anchor="w").pack(anchor="w", fill="x",
                                                pady=(2, 0))
     gui_hrule(side).pack(fill="x", pady=6)
     manual_mode = tk.BooleanVar(win, False)
-    gui_toggle(side, manual_mode, "Manual accept / reject",
+    gui_toggle(side, manual_mode, "Manual accept / resizing",
                command=lambda: mode_changed()).pack(fill="x")
-    gui_small(side, "while on: left-click a bead to flip it",
-              anchor="w").pack(anchor="w", fill="x", pady=(2, 6))
+    gui_small(side, "while on: left-click a bead to flip it;\n"
+                    "double-click one to move / resize it, Enter sets it",
+              justify="left", anchor="w").pack(anchor="w", fill="x",
+                                               pady=(2, 6))
     gui_hrule(side).pack(fill="x", pady=6)
     gui_label(side, "Show", font=F_TITLE).pack(anchor="w")
     show_vars = {}          # kept here: an unreferenced tk variable is
@@ -4820,11 +5139,17 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     # left-drag draws the analysis box only when no other tool has it
     box.active = lambda ev: not (manual_mode.get() or draw_mode.get()
                                  or zoombox.get())
+    def um_per_px_now() -> float:
+        return gui_transform(state, gui_apply_params(
+            copy.deepcopy(state.cfg), v)).um_per_px
+
     circle = GuiCircleTool(fig, ax, draw_mode, lambda x, y, d: set_circle(x, y, d),
-                           set_status,
-                           lambda: gui_transform(state, gui_apply_params(
-                               copy.deepcopy(state.cfg), v)).um_per_px,
-                           blocked=lambda: zoombox.get())
+                           set_status, um_per_px_now,
+                           blocked=lambda: zoombox.get(),
+                           # the parameters window's bead size, as a radius
+                           default_r=lambda: gui_float(
+                               v["bead_um"], float(state.cfg["bead-diameter"]))
+                           / um_per_px_now() / 2.0)
     # matplotlib keeps only weak references to the tools' callbacks
     win.tools = (circle, GuiZoomBox(fig, ax, zoombox,
                                     on_done=lambda: zoom_box_done()))
@@ -4840,9 +5165,11 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         button, so one switches the other off."""
         if draw_mode.get():
             manual_mode.set(False)
+            circle.drop()
             widget.config(cursor="crosshair")
-            set_status("manual selection: press on a bead centre, drag out "
-                       "to size the circle, release")
+            set_status("manual selection: click a bead centre for a "
+                       "bead-size circle; arrows move, press-drag resizes, "
+                       "Enter sets it")
         else:
             circle.drop()
             mode_changed()
@@ -4854,6 +5181,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         inside = [i for i, b in enumerate(state.beads)
                   if math.hypot(b.x_px - x, b.y_px - y) <= d / 2]
         b = Bead(x, y, d)
+        b.source = "drawn"                # shots sit off the drawn circle
         gui_set_manual(b, "accept")
         if layer.beads is state.beads and len(layer.patches) == len(state.beads):
             # one circle in, the replaced ones out -- redrawing every
@@ -4893,9 +5221,10 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         on = manual_mode.get()
         if on and draw_mode.get():
             draw_mode.set(False)
-            circle.drop()
+        circle.drop()                      # also ends a double-click edit
         widget.config(cursor="hand2" if on else "crosshair")
-        set_status("manual mode: left-click a bead to flip accept / reject"
+        set_status("manual mode: left-click a bead to flip accept / reject, "
+                   "double-click to move / resize it"
                    if on else "left-drag = draw the box     "
                               "right-drag = move the view")
 
@@ -4949,11 +5278,10 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         bar_step(f"detecting ({method})")
         cfg = gui_size_limits_px(state,
                                  gui_apply_params(copy.deepcopy(state.cfg), v))
-        if method == "threshold":
-            cfg["detection"]["threshold-step"] = max(
-                1, int(round(gui_float(v["threshold_step"], 10))))
         if method == "broad":
             cfg["detection"]["broad-diameter-px"] = gui_window_px(state, cfg)
+            cfg["detection"]["broad-stringency"] = min(
+                max(gui_float(v["broad_stringency"], 100), 1), 100)
         # how far gui_clearance looks, in px: 3 x the isolation window
         cfg["detection"]["clear-cap-px"] = max(
             3 * float(cfg["min-bead-separation"])
@@ -4967,6 +5295,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
             for b in state.beads[n_before:]:
                 if not b.clumped:
                     gui_set_manual(b, "accept")
+                    b.source = "broad"    # shots sit off the whole blob
         state.boxes.append(tuple(box.box))
         bar_step("filtering")
         gui_refilter(state)
@@ -4990,23 +5319,52 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         update_counts()
         set_status(f"{decision}ed {len(sel)} beads in the box")
 
-    def on_click(ev):
-        if (ev.button != 1 or not manual_mode.get() or ev.inaxes is not ax
-                or ev.xdata is None or zoombox.get()):
-            return
-        if not state.beads:
-            return
-        d = [math.hypot(b.x_px - ev.xdata, b.y_px - ev.ydata)
-             if layer.visible(b) else float("inf") for b in state.beads]
-        i = int(np.argmin(d))
-        if not math.isfinite(d[i]) or d[i] > 40:
-            return
+    flip_timer = {"id": None}
+
+    def flip(i: int) -> None:
+        flip_timer["id"] = None
         b = state.beads[i]
         gui_set_manual(b, "reject" if b.accepted else "accept")
         gui_refilter(state)
         layer.refresh()
         update_counts()
         set_status(f"bead {i} -> {b.manual}")
+
+    def resized(b, x: float, y: float, d: float) -> None:
+        """Enter after a double-click edit: the bead takes the circle's
+        centre and size; its decision is left as it was."""
+        b.x_px, b.y_px, b.diameter_px = x, y, d
+        if b in layer.beads:
+            c = layer.patches[layer.beads.index(b)]
+            c.center = (x, y)
+            c.set_radius(max(d / 2, 4))
+        gui_refilter(state)
+        layer.refresh()
+        update_counts()
+        set_status(f"bead resized: x {x:.0f}  y {y:.0f}, {d:.0f} px  --  "
+                   f"left-click flips, double-click resizes")
+
+    def on_click(ev):
+        if (ev.button != 1 or not manual_mode.get() or ev.inaxes is not ax
+                or ev.xdata is None or zoombox.get()):
+            return
+        if not state.beads or circle.pending is not None:
+            return                          # the circle tool has this press
+        d = [math.hypot(b.x_px - ev.xdata, b.y_px - ev.ydata)
+             if layer.visible(b) else float("inf") for b in state.beads]
+        i = int(np.argmin(d))
+        if not math.isfinite(d[i]) or d[i] > 40:
+            return
+        if flip_timer["id"] is not None:    # second press of a double-click
+            win.after_cancel(flip_timer["id"])
+            flip_timer["id"] = None
+        if ev.dblclick:
+            b = state.beads[i]
+            circle.begin(b.x_px, b.y_px, b.diameter_px / 2,
+                         lambda x, y, dd, b=b: resized(b, x, y, dd))
+            return
+        # a single click flips -- after a pause, so a double-click does not
+        flip_timer["id"] = win.after(250, flip, i)
 
     fig.canvas.mpl_connect("button_press_event", on_click)
 
@@ -5105,6 +5463,9 @@ def gui_pick_window(master, state: GuiState):
     # bottom bar, packed first so the image can never squeeze it out
     bottom = tk.Frame(win, bg=GUI_BG, padx=8, pady=6)
     bottom.pack(fill="x", side="bottom")
+    # save and review / run progress: a green bar along the bottom edge
+    win.progress = GuiProgress(bottom, ("review", "run"), height=px(14))
+    win.progress.widget.pack(side="bottom", fill="x", pady=(4, 0))
     status = gui_small(bottom, "right-click = set pending pixel     "
                                "Tab = next box     Ctrl+V = paste     "
                                "Enter = add     scroll = zoom     "
