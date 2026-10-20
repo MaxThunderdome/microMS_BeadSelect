@@ -575,6 +575,10 @@ CONFIG = {
         "zoom": True,
         "zoom-window-px": 700,
         "zoom-scale": 3,
+        # 'Run and export map' sets this for one run: the scan with
+        # the naming grid and every accepted bead labelled, in tiles,
+        # plus a legend of bead coordinates (draw_bead_map)
+        "export-map": False,
 
         # The .xeo holds coordinates; the .run is the ordered list of
         # position NAMES autoXecute executes, resolving them through
@@ -949,6 +953,7 @@ class Bead:
     # included): the circle IS the bead, so shot_radius trusts it
     source: str = ""
     shots: list = field(default_factory=list)
+    name: str = ""      # grid name, e.g. "AC01" -- see name_beads
 
 
 def _roi_slice(img, cfg):
@@ -1279,6 +1284,8 @@ class Shot:
     y_px: float = 0.0
     dropped: bool = False
     drop_reason: str = ""
+    ring: int = 1       # 1 = innermost ring (the centre shot counts as 1)
+    shot: int = 1       # 1-based number of the shot within its ring
 
 
 def circular_pack(radius_um: float, cfg: dict) -> list[float]:
@@ -1439,16 +1446,22 @@ def place_shots(beads: list[Bead], cfg: dict,
         # add a ring or replace the set with the centre shot.
         rings = pattern_rings(b, cfg, R, angles)
         ring: list[Shot] = []
-        for R, a in [(R_, a_) for R_, angs in rings for a_ in angs]:
+        # k is the ring number (1 = innermost), carried on the shot so
+        # position names can say which ring a shot belongs to
+        # j numbers the shots around that ring in placement order
+        for R, a, k, j in [(R_, a_, k_, j_)
+                           for k_, (R_, angs) in enumerate(rings, start=1)
+                           for j_, a_ in enumerate(angs, start=1)]:
             rad = math.radians(a)
-            # Pixel position too: microMS's PositionName convention
-            # encodes it, which is how its loadXEO reads the file back.
+            # Pixel position too: microMS's writeXEO maps blobs from
+            # pixels, and the map image is drawn in pixels.
             R_px = R / T_um_per_px if T_um_per_px else 0.0
             s = Shot(i, a,
                      b.x_um + R * math.cos(rad),
                      b.y_um + R * math.sin(rad),
                      b.x_px + R_px * math.cos(rad),
-                     b.y_px + R_px * math.sin(rad))
+                     b.y_px + R_px * math.sin(rad),
+                     ring=k, shot=j)
 
             # No software travel-limit check. The stage enforces its
             # own limits in hardware; a guessed coordinate window here
@@ -1504,19 +1517,105 @@ def serpentine(beads: list[Bead], shots: list[Shot],
 
 
 # =====================================================================
+# BEAD NAMES  (grid cells, 2026-10-20)
+#
+# Accepted beads are named by a fixed MAP_COLS x MAP_ROWS grid laid
+# over the scan (6 x 2: columns A-F across x, rows A-B down y):
+# column letter from x (A = leftmost), row letter from y (A = top),
+# then the bead's number inside that cell -- "AB01" is bead 01 of
+# column A, row B. Cells are scan width / MAP_COLS by scan height /
+# MAP_ROWS. Inside a cell the beads are numbered left to right in
+# MAP_BANDS horizontal bands, top band first. Rejected and clumped
+# beads get no name. A cell holding more than MAP_MAX_PER_CELL beads
+# is only warned about.
+# =====================================================================
+
+MAP_COLS = 6                # grid columns across x: letters A..F
+MAP_ROWS = 2                # grid rows down y: letters A..B
+MAP_MAX_PER_CELL = 25       # warn when a cell holds more accepted beads
+MAP_BANDS = 5               # numbering bands inside a cell (top first)
+MAP_TILES = 10              # the full map is also written in this many tiles
+MAP_TILE_OVERLAP = 0.05     # tiles overlap by this fraction of their size
+# Label size follows the picture it is drawn on, so a tile or the
+# overview stays readable when it is scaled to fit a screen: text
+# height = picture width * MAP_LABEL_FRACTION, never under MAP_LABEL_PX.
+MAP_LABEL_FRACTION = 1 / 130
+MAP_LABEL_PX = 16
+MAP_OVERVIEW_PX = 8000      # the whole-scan map is reduced to this longer side
+MAP_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+RING_LETTERS = "XYZ"         # ring 1, 2, 3 in a position name (AB01X1)
+
+
+def scan_size(scan: Path | None, beads: list[Bead]) -> tuple[int, int]:
+    """(width, height) in pixels of the scan, or of the beads' extent
+    when the scan is not available."""
+    if scan is not None and scan.exists():
+        try:
+            import cv2
+            img = cv2.imread(str(scan), cv2.IMREAD_UNCHANGED)
+            if img is not None:
+                return int(img.shape[1]), int(img.shape[0])
+        except ImportError:
+            pass
+    if beads:
+        return (int(math.ceil(max(b.x_px for b in beads))) + 1,
+                int(math.ceil(max(b.y_px for b in beads))) + 1)
+    return 1, 1
+
+
+def name_beads(beads: list[Bead], width_px: int,
+               height_px: int) -> tuple[float, float, int, int]:
+    """
+    Assign Bead.name to every accepted bead (see the section comment).
+    Returns (cell width px, cell height px, columns, rows) so the map
+    can draw the same grid.
+    """
+    for b in beads:
+        b.name = ""
+    cols, rows = MAP_COLS, MAP_ROWS
+    cw = float(max(width_px, 1)) / cols
+    ch = float(max(height_px, 1)) / rows
+    acc = [b for b in beads if b.accepted]
+    if not acc:
+        return cw, ch, cols, rows
+    xs = np.array([b.x_px for b in acc], float)
+    ys = np.array([b.y_px for b in acc], float)
+    ci = np.clip(np.floor(xs / cw).astype(int), 0, cols - 1)
+    ri = np.clip(np.floor(ys / ch).astype(int), 0, rows - 1)
+    groups: dict[tuple[int, int], list[Bead]] = {}
+    for b, c, r in zip(acc, ci, ri):
+        groups.setdefault((int(c), int(r)), []).append(b)
+    band = ch / MAP_BANDS
+    for (c, r), members in groups.items():
+        members.sort(key=lambda b: (int((b.y_px - r * ch) // band), b.x_px))
+        for k, b in enumerate(members, start=1):
+            b.name = f"{MAP_LETTERS[c]}{MAP_LETTERS[r]}{k:02d}"
+        if len(members) > MAP_MAX_PER_CELL:
+            print(f"  WARNING: cell {MAP_LETTERS[c]}{MAP_LETTERS[r]} holds "
+                  f"{len(members)} beads (more than {MAP_MAX_PER_CELL})")
+    return cw, ch, cols, rows
+
+
+# =====================================================================
 # EXPORT -- CSV
 # =====================================================================
 
-def write_csv(path: Path, beads: list[Bead], shots: list[Shot]) -> None:
+def write_csv(path: Path, beads: list[Bead], shots: list[Shot],
+              names: list[str] | None = None) -> None:
+    """names: the position name of each shot, as written to the .xeo
+    and .run (position_name). Without it the old B0001_A180 is used."""
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["index", "position", "bead_id", "angle_deg",
-                    "x_um", "y_um", "bead_x_um", "bead_y_um",
+        w.writerow(["index", "position", "bead_name", "bead_id", "ring",
+                    "shot", "angle_deg", "x_um", "y_um", "bead_x_um",
+                    "bead_y_um",
                     "bead_diameter_um", "nn_um", "clumped"])
         for k, s in enumerate(shots):
             b = beads[s.bead_id]
-            w.writerow([k, f"B{s.bead_id:04d}_A{int(s.angle_deg):03d}",
-                        s.bead_id, f"{s.angle_deg:.1f}",
+            pos = (names[k] if names and k < len(names)
+                   else f"B{s.bead_id:04d}_A{int(s.angle_deg):03d}")
+            w.writerow([k, pos, b.name, s.bead_id, s.ring, s.shot,
+                        f"{s.angle_deg:.1f}",
                         f"{s.x_um:.2f}", f"{s.y_um:.2f}",
                         f"{b.x_um:.2f}", f"{b.y_um:.2f}",
                         f"{b.diameter_um:.2f}", f"{b.nn_um:.2f}",
@@ -1818,7 +1917,7 @@ def _flex_mapper():
         def loadInstrumentFile(self, filename):
             return self.loadXEO(filename)
 
-        def saveInstrumentFile(self, filename, blobs):
+        def saveInstrumentFile(self, filename, blobs, names=None):
             self.writeXEO(filename, blobs)
             # writeXEO puts a tab before <PlateSpots>; the reference
             # indents it with four spaces and uses CRLF line ends
@@ -1827,6 +1926,11 @@ def _flex_mapper():
                 text = path.read_text().replace(
                     "\n\t<PlateSpots ",
                     "\n" + XEO_PLATESPOTS_INDENT + "<PlateSpots ", 1)
+                # writeXEO names every spot x_<px>y_<py>; the .run is
+                # matched to the .xeo by name, so the names handed in
+                # (position_name, one per blob) replace them here
+                if names:
+                    text = rename_xeo_positions(text, names)
                 path.write_text(text, newline="\r\n")
 
 
@@ -1853,10 +1957,39 @@ def _flex_mapper():
                                  make_blob=make_blob)
 
 
+def rename_xeo_positions(text: str, names: list[str]) -> str:
+    """
+    Replace the PositionName of each <PlateSpot> inside the
+    <PlateSpots> block, in order, with the given names. The footer's
+    AutoTeachSpots also use <PlateSpot> lines and are left alone.
+    """
+    import re
+    out, k, inside = [], 0, False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("<PlateSpots"):
+            inside = True
+        elif s.startswith("</PlateSpots>"):
+            inside = False
+        elif inside and s.startswith("<PlateSpot ") and k < len(names):
+            line = re.sub(r'PositionName="[^"]*"',
+                          f'PositionName="{names[k]}"', line, count=1)
+            k += 1
+        out.append(line)
+    if k != len(names):
+        raise RuntimeError(f".xeo has {k} positions but {len(names)} "
+                           f"names were given")
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
 def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
-              cfg: dict, M: "Transform | None" = None) -> list[Path]:
+              cfg: dict, M: "Transform | None" = None,
+              names: list[str] | None = None) -> list[Path]:
     """
     Write .xeo files using microMS's own brukerMapper.writeXEO.
+
+    names: one position name per shot (position_name). They replace
+    writeXEO's x_<px>y_<py> names so the .xeo matches the .run.
 
     Not a reimplementation: flex_mapper.flexMapper subclasses
     brukerMapper, so the header, footer, spot-line format, MTP grid
@@ -1894,7 +2027,10 @@ def write_xeo(prefix: Path, shots: list[Shot], beads: list[Bead],
     for n, chunk in enumerate(chunks, start=1):
         blobs = [flex_mapper.make_blob(s.x_px, s.y_px) for s in chunk]
         out = prefix.with_name(f"{prefix.name}_{n:03d}.xeo")
-        mapper.saveInstrumentFile(str(out), blobs)
+        s0 = (n - 1) * XEO_MAX_POSITIONS
+        mapper.saveInstrumentFile(
+            str(out), blobs,
+            names[s0:s0 + len(chunk)] if names else None)
         written.append(out)
     return written
 
@@ -1946,8 +2082,10 @@ def read_xeo(path: Path) -> list[str]:
 # =====================================================================
 
 def write_flex_txt(path: Path, shots: list[Shot], cfg: dict,
-                   T: Transform) -> Path:
-    """Write a flexImaging target list in stage coordinates."""
+                   T: Transform, names: list[str] | None = None) -> Path:
+    """Write a flexImaging target list in stage coordinates.
+    names: the spot-name per shot (position_name); without it the
+    old x<px>_y<py> is used."""
     rows = ["# X-pos Y-pos spot-name region"]
     region = str(cfg["output"].get("flex-region", "01"))
     negate = -1.0 if cfg["output"].get("flex-negate-y", True) else 1.0
@@ -1957,9 +2095,11 @@ def write_flex_txt(path: Path, shots: list[Shot], cfg: dict,
         rows.append(f"{f['x_um']:.0f} {negate * f['y_um']:.0f} "
                     f"fiducial{i} {region}")
 
-    for sh in shots:
+    for k, sh in enumerate(shots):
+        spot = (names[k] if names and k < len(names)
+                else f"x{sh.x_px:.0f}_y{sh.y_px:.0f}")
         rows.append(f"{sh.x_um:.0f} {negate * sh.y_um:.0f} "
-                    f"x{sh.x_px:.0f}_y{sh.y_px:.0f} {region}")
+                    f"{spot} {region}")
 
     path.write_text("\n".join(rows) + "\n")
     return path
@@ -2035,26 +2175,39 @@ def _xml_escape(v: str) -> str:
              .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def position_name(cfg: dict, index: int, shot) -> str:
+def position_name(cfg: dict, index: int, shot,
+                  beads: list[Bead] | None = None) -> str:
     """
-    Name for one position, shared by the .xeo and the .run.
+    Name for one position, shared by the .xeo, the .run, the CSV and
+    the flexImaging .txt.
 
-    The two files are matched by name alone, so whatever this returns
-    must be used identically in both. Default follows the convention
-    seen in the reference run file.
+    The .xeo and .run are matched by name alone, so whatever this
+    returns must be used identically in both. Default (2026-10-20):
+    <grid name><ring letter><shot number>, e.g. AB01X1 -- the bead's
+    grid cell and number (name_beads), the ring the shot sits on as a
+    letter (X = ring 1, Y = ring 2, Z = ring 3; RING_LETTERS) and the
+    shot's number
+    around that ring in placement order, from 1. No underscores.
+    An output.position-name pattern overrides it; the fields are
+    name, ringletter, shot, ring, angle, region, n, i, j, px, py, bead.
     """
     out = cfg["output"]
-
-    default = ("R{region:02d}X{i:.0f}Y{j:.0f}"
-               if cfg.get("fiducial-units", "stage") == "plate"
-               else "x_{px:.0f}y_{py:.0f}")
-    pattern = out.get("position-name") or default
-    return pattern.format(region=out.get("region", 0),
+    bead = beads[shot.bead_id] if beads is not None else None
+    name = (bead.name if bead is not None and bead.name
+            else f"B{shot.bead_id:04d}")
+    angle = int(round(shot.angle_deg)) % 360
+    ring = int(getattr(shot, "ring", 1))
+    pattern = out.get("position-name") or "{name}{ringletter}{shot}"
+    return pattern.format(name=name, ring=ring,
+                          ringletter=RING_LETTERS[min(ring, len(RING_LETTERS)) - 1],
+                          shot=int(getattr(shot, "shot", 1)),
+                          angle=angle,
+                          region=out.get("region", 0),
                           n=index + 1,
                           i=shot.x_um / PLATE_UNIT_UM,   # plate units
                           j=shot.y_um / PLATE_UNIT_UM,
                           px=shot.x_px, py=shot.y_px,
-                          bead=shot.bead_id, angle=int(shot.angle_deg))
+                          bead=shot.bead_id)
 
 
 def write_run(path: Path, names: list[str], cfg: dict) -> Path:
@@ -2157,6 +2310,156 @@ def draw_overlay(path: Path, beads: list[Bead], shots: list[Shot],
         plt.show()
     plt.close(fig)
 
+
+
+def _map_annotate(canvas, beads: list[Bead], cw: float, ch: float,
+                  cols: int, rows: int, f: float, label_px: float) -> None:
+    """Draw the naming grid, its letters and the labelled beads onto
+    canvas, whose pixels are the scan's scaled by f."""
+    import cv2
+    H, W = canvas.shape[:2]
+    grid_col = (0, 200, 255)          # BGR: amber grid and letters
+    bead_col = (60, 200, 60)          # green circles
+    text_col = (255, 80, 0)           # blue labels
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    base = cv2.getTextSize("A", font, 1.0, 1)[0][1]    # px tall at scale 1
+    scale = label_px / float(base)
+    thick = max(1, int(round(scale)))
+    lw = max(1, int(round(label_px / 8.0)))
+
+    for c in range(1, cols):
+        x = int(round(c * cw * f))
+        cv2.line(canvas, (x, 0), (x, H - 1), grid_col, lw)
+    for r in range(1, rows):
+        y = int(round(r * ch * f))
+        cv2.line(canvas, (0, y), (W - 1, y), grid_col, lw)
+    big = scale * 2.5
+    for c in range(cols):
+        x = int(round((c + 0.5) * cw * f))
+        cv2.putText(canvas, MAP_LETTERS[c], (x, int(base * big) + lw + 4),
+                    font, big, grid_col, thick * 2, cv2.LINE_AA)
+    for r in range(rows):
+        y = int(round((r + 0.5) * ch * f))
+        cv2.putText(canvas, MAP_LETTERS[r], (lw + 4, y), font, big,
+                    grid_col, thick * 2, cv2.LINE_AA)
+
+    for b in beads:
+        x, y = int(round(b.x_px * f)), int(round(b.y_px * f))
+        rad = max(int(round(b.diameter_px / 2.0 * f)) + 2, lw + 2)
+        cv2.circle(canvas, (x, y), rad, bead_col, lw, cv2.LINE_AA)
+        cv2.putText(canvas, b.name, (x + rad + 2, y - rad - 2), font,
+                    scale, text_col, thick, cv2.LINE_AA)
+
+
+def draw_bead_map(prefix: Path, beads: list[Bead], cfg: dict,
+                  scan: Path | None, T: Transform, cw: float, ch: float,
+                  cols: int, rows: int) -> list[Path]:
+    """
+    The bead map ('Run and export map'): the scan with the naming
+    grid drawn over it, its column letters along the top and row
+    letters down the left, and every accepted bead circled and
+    labelled with its grid name. Written as
+
+        <prefix>_map.png            the whole scan, reduced to
+                                    MAP_OVERVIEW_PX on its longer side
+        <prefix>_map_01.png ...     MAP_TILES equal full-resolution
+                                    tiles (overlapping by
+                                    MAP_TILE_OVERLAP so no label is
+                                    cut), laid out to keep tiles close
+                                    to square
+        <prefix>_map_legend.txt     per grid cell, each bead's stage
+                                    and pixel coordinates
+
+    Labels are sized to the picture they sit on (MAP_LABEL_FRACTION).
+    Returns the files written.
+    """
+    import cv2
+    img = None
+    if scan is not None and scan.exists():
+        img = cv2.imread(str(scan), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        W, H = int(math.ceil(cols * cw)), int(math.ceil(rows * ch))
+        img = np.full((max(H, 1), max(W, 1)), 255, np.uint8)
+    H, W = img.shape[:2]
+    acc = [b for b in beads if b.accepted and b.name]
+    written = []
+
+    # tiles: the (rows x cols) split of MAP_TILES whose tiles are
+    # closest to square for this scan
+    best = None
+    for tr in range(1, MAP_TILES + 1):
+        if MAP_TILES % tr:
+            continue
+        tc = MAP_TILES // tr
+        score = abs(math.log((W / tc) / (H / tr)))
+        if best is None or score < best[0]:
+            best = (score, tr, tc)
+    _, tr, tc = best
+    tw, th = W / tc, H / tr
+    ox, oy = tw * MAP_TILE_OVERLAP, th * MAP_TILE_OVERLAP
+
+    canvas = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    label_px = max(MAP_LABEL_PX, tw * MAP_LABEL_FRACTION)
+    _map_annotate(canvas, acc, cw, ch, cols, rows, 1.0, label_px)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    base = cv2.getTextSize("A", font, 1.0, 1)[0][1]
+    hdr = label_px * 1.5 / base
+    k = 0
+    for r in range(tr):
+        for c in range(tc):
+            k += 1
+            x0 = int(max(0, math.floor(c * tw - ox)))
+            x1 = int(min(W, math.ceil((c + 1) * tw + ox)))
+            y0 = int(max(0, math.floor(r * th - oy)))
+            y1 = int(min(H, math.ceil((r + 1) * th + oy)))
+            tile = canvas[y0:y1, x0:x1].copy()
+            label = f"map {k}/{MAP_TILES}  px x {x0}-{x1}  y {y0}-{y1}"
+            cv2.putText(tile, label, (6, int(base * hdr) + 6), font, hdr,
+                        (0, 0, 255), max(1, int(round(hdr)) * 2), cv2.LINE_AA)
+            tp = prefix.with_name(f"{prefix.name}_map_{k:02d}.png")
+            cv2.imwrite(str(tp), tile)
+            written.append(tp)
+    del canvas
+
+    # the whole scan, reduced, with labels sized for that picture
+    f = min(1.0, MAP_OVERVIEW_PX / float(max(W, H)))
+    small = (cv2.resize(img, (max(1, int(round(W * f))),
+                              max(1, int(round(H * f)))),
+                        interpolation=cv2.INTER_AREA) if f < 1.0 else img)
+    overview = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
+    _map_annotate(overview, acc, cw, ch, cols, rows, f,
+                  max(MAP_LABEL_PX, overview.shape[1] * MAP_LABEL_FRACTION))
+    full = prefix.with_name(prefix.name + "_map.png")
+    cv2.imwrite(str(full), overview)
+    written.insert(0, full)
+
+    # legend
+    um_per_px = T.um_per_px if T is not None else 0.0
+    lines = [f"Bead map legend -- {cols} x {rows} grid, cells "
+             f"{cw:.0f} x {ch:.0f} px"
+             + (f" ({cw * um_per_px:.0f} x {ch * um_per_px:.0f} um)"
+                if um_per_px else ""),
+             "Column letter = x (A leftmost), row letter = y (A top). "
+             "Bead name = column + row + number inside the cell.",
+             "Coordinates: stage um (x, y), then scan pixels in brackets.",
+             f"Tiles: {tr} rows x {tc} columns of {MAP_TILES}, numbered "
+             f"left to right, top to bottom.",
+             ""]
+    cells: dict[tuple[int, int], list[Bead]] = {}
+    for b in acc:
+        cells.setdefault((MAP_LETTERS.index(b.name[0]),
+                          MAP_LETTERS.index(b.name[1])), []).append(b)
+    for (c, r) in sorted(cells):
+        members = sorted(cells[(c, r)], key=lambda b: b.name)
+        parts = [f"bead {b.name} at x {b.x_um:.0f} um and y {b.y_um:.0f} um "
+                 f"(px {b.x_px:.0f}, {b.y_px:.0f})" for b in members]
+        lines.append(f"Region {MAP_LETTERS[c]} (x-axis) / {MAP_LETTERS[r]} "
+                     f"(y-axis) contains {len(members)} beads: "
+                     + "; ".join(parts))
+    lp = prefix.with_name(prefix.name + "_map_legend.txt")
+    lp.write_text("\n".join(lines) + "\n")
+    written.append(lp)
+    return written
 
 
 def draw_zoom(path: Path, beads: list[Bead], cfg: dict, T: Transform,
@@ -2901,7 +3204,7 @@ def build_beads(cfg: dict, T: Transform) -> tuple[list[Bead], Path | None]:
 
 
 def run(cfg: dict) -> None:
-    bar_start("run", 9)
+    bar_start("run", 10)
     bar_step("fitting registration")
     log("fitting registration from fiducials")
     T = to_microns(report_registration(cfg), cfg)
@@ -2999,6 +3302,15 @@ def run(cfg: dict) -> None:
         print(f"      {n:5d}  {reason}")
     print(f"  written : {len(ordered)}")
 
+    bar_step("naming beads")
+    W, H = scan_size(scan, beads)
+    cw, ch, cols, rows = name_beads(beads, W, H)
+    names = [position_name(cfg, i, sh, beads) for i, sh in enumerate(ordered)]
+    print(f"\nBead names     : {cols} x {rows} grid of {cw:.0f} x {ch:.0f} px "
+          f"cells over {W} x {H} px")
+    if names:
+        print(f"  position names {names[0]} .. {names[-1]}")
+
     outdir = results_dir(cfg, timestamp() + " run")
     bar_where(outdir)
     prefix = outdir / (results_tag(cfg) + cfg["output"]["prefix"])
@@ -3006,8 +3318,14 @@ def run(cfg: dict) -> None:
     log(f"writing outputs with prefix {prefix}")
     csv_path = prefix.with_suffix(".csv")
     bar_step(f"writing {csv_path.name}")
-    write_csv(csv_path, beads, ordered)
+    write_csv(csv_path, beads, ordered, names)
     print(f"\nWrote {csv_path.name}  ({len(ordered)} positions, stage um)")
+
+    if cfg["output"].get("export-map", False):
+        bar_step("rendering bead map")
+        log("rendering bead map")
+        for f in draw_bead_map(prefix, beads, cfg, scan, T, cw, ch, cols, rows):
+            print(f"Wrote {f.name}")
 
     if cfg["output"].get("overlay", True):
         bar_step("rendering overlay")
@@ -3030,19 +3348,19 @@ def run(cfg: dict) -> None:
     bar_step("writing instrument files")
     if cfg["output"].get("write-flex-txt", True) and ordered:
         fp = prefix.with_name(prefix.name + "_flexImaging.txt")
-        write_flex_txt(fp, ordered, cfg, T)
+        write_flex_txt(fp, ordered, cfg, T, names)
         print(f"Wrote {fp.name}  ({len(read_flex_txt(fp))} rows: "
               f"{len(cfg['fiducials'])} fiducials + {len(ordered)} targets, "
               f"stage um)")
 
     if cfg["output"].get("write-xeo", True) and ordered:
         M = fit_mtp(cfg)
-        files = write_xeo(prefix, ordered, beads, cfg, M)
+        files = write_xeo(prefix, ordered, beads, cfg, M, names)
         for f in files:
             print(f"Wrote {f.name}  ({len(read_xeo(f))} positions)")
 
         if files and cfg["output"].get("write-run", True):
-            names = [position_name(cfg, i, sh) for i, sh in enumerate(ordered)]
+            # the same names as the .xeo, chunked the same way
             for idx, f in enumerate(files):
                 s0 = idx * XEO_MAX_POSITIONS
                 rp = write_run(f.with_suffix(".run"),
@@ -6743,6 +7061,8 @@ def gui_pick_window(master, state: GuiState):
             gui_review_into(state, layer, set_status, win)
             return
         cfg = gui_run_cfg(state, active)
+        if what == "map":
+            cfg["output"]["export-map"] = True
 
         def done(_result, err):
             state.busy = False
@@ -6763,6 +7083,8 @@ def gui_pick_window(master, state: GuiState):
 
     gui_button(bottom, "Save and run  >", lambda: save_and("run"),
                font=F_BIG).pack(side="right")
+    gui_button(bottom, "Run and export map", lambda: save_and("map"),
+               font=F_BIG).pack(side="right", padx=(0, 10))
     gui_button(bottom, "Save and review", lambda: save_and("review"),
                font=F_BIG).pack(side="right", padx=(0, 10))
 
