@@ -5848,36 +5848,95 @@ def gui_review_window(master, folder: Path):
 
 
 class GuiBeadLayer:
-    """Bead circles (and, after a review, shot circles) on the canvas."""
+    """
+    Bead circles (and, after a review, shot circles) on the canvas.
 
-    def __init__(self, fig, ax, show_vars: dict):
+    While `big_var` (Manual accept / resizing) is on, every circle is
+    drawn at twice the bead radius with a thin line, so the bead's own
+    edge stays visible inside it, and a small black cross marks the
+    centre; a rejected bead's circle is dashed. Off, the circles sit
+    on the bead edge as before.
+    """
+
+    BIG_FACTOR = 2.0          # radius multiplier while big_var is on
+    BIG_LW = 0.8              # circle line width while big_var is on
+    CROSS_LW = 0.6            # centre cross line width
+    CROSS_ARM = 0.35          # cross half-length, as a fraction of the radius
+
+    def __init__(self, fig, ax, show_vars: dict, big_var=None):
         self.fig, self.ax, self.show = fig, ax, show_vars
+        self.big_var = big_var
         self.patches = []
+        self.crosses = []
         self.shot_patches = []
         self.beads = []
 
+    def big(self) -> bool:
+        return bool(self.big_var is not None and self.big_var.get())
+
     def rebuild(self, beads: list) -> None:
         from matplotlib.patches import Circle
-        for p in self.patches + self.shot_patches:
+        for p in self.patches + self.crosses + self.shot_patches:
             p.remove()
-        self.patches, self.shot_patches = [], []
+        self.patches, self.crosses, self.shot_patches = [], [], []
         self.beads = beads
         for b in beads:
             c = Circle((b.x_px, b.y_px), max(b.diameter_px / 2, 4),
                        fill=False, ec=gui_bead_colour(b), lw=1.3)
             self.ax.add_patch(c)
             self.patches.append(c)
+            # the centre cross: two segments in image pixels, NaN-split,
+            # so it scales with the zoom like the circle does
+            x = self.ax.plot([], [], color="black", lw=self.CROSS_LW,
+                             visible=False, solid_capstyle="butt")[0]
+            self.crosses.append(x)
         self.refresh()
 
     def refresh(self) -> None:
-        for b, c in zip(self.beads, self.patches):
+        big = self.big()
+        for b, c, x in zip(self.beads, self.patches, self.crosses):
+            r = max(b.diameter_px / 2, 4)
+            shown = bool(self.show[gui_bead_category(b)].get())
+            c.center = (b.x_px, b.y_px)
             c.set_edgecolor(gui_bead_colour(b))
-            c.set_linewidth(2.0 if b.manual else 1.3)
-            c.set_visible(bool(self.show[gui_bead_category(b)].get()))
+            c.set_visible(shown)
+            if big:
+                c.set_radius(r * self.BIG_FACTOR)
+                c.set_linewidth(self.BIG_LW)
+                c.set_linestyle("-" if b.accepted else "--")
+                s = r * self.CROSS_ARM
+                x.set_data([b.x_px - s, b.x_px + s, float("nan"),
+                            b.x_px, b.x_px],
+                           [b.y_px, b.y_px, float("nan"),
+                            b.y_px - s, b.y_px + s])
+                x.set_visible(shown)
+            else:
+                c.set_radius(r)
+                c.set_linewidth(2.0 if b.manual else 1.3)
+                c.set_linestyle("-")
+                x.set_visible(False)
         self.fig.canvas.draw_idle()
 
     def visible(self, b) -> bool:
         return bool(self.show[gui_bead_category(b)].get())
+
+    def add(self, b) -> None:
+        """One more bead at the end, drawn without a full rebuild
+        (self.beads must be the list it was built from)."""
+        from matplotlib.patches import Circle
+        c = Circle((b.x_px, b.y_px), max(b.diameter_px / 2, 4), fill=False,
+                   ec=gui_bead_colour(b), lw=1.3)
+        self.ax.add_patch(c)
+        self.patches.append(c)
+        self.crosses.append(self.ax.plot(
+            [], [], color="black", lw=self.CROSS_LW, visible=False,
+            solid_capstyle="butt")[0])
+
+    def remove_at(self, i: int) -> None:
+        """Drop the i-th bead's circle and cross (the caller removes
+        the bead from the list itself)."""
+        self.patches.pop(i).remove()
+        self.crosses.pop(i).remove()
 
     def show_shots(self, beads, shots, T, cfg) -> None:
         from matplotlib.patches import Circle
@@ -6367,25 +6426,30 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     manual_mode = tk.BooleanVar(win, False)
     gui_toggle(side, manual_mode, "Manual accept / resizing",
                command=lambda: mode_changed()).pack(fill="x")
-    gui_small(side, "while on: left-click a bead to flip it;\n"
+    gui_small(side, "while on: circles at 2x the bead, cross = centre;\n"
+                    "left-click a bead to add / remove it;\n"
                     "double-click one to move / resize it, Enter sets it",
               justify="left", anchor="w").pack(anchor="w", fill="x",
                                                pady=(2, 6))
     gui_hrule(side).pack(fill="x", pady=6)
     gui_label(side, "Show", font=F_TITLE).pack(anchor="w")
     show_vars = {}          # kept here: an unreferenced tk variable is
-    for key, t, col in (("accepted", "accepted (green)", "#1e7d1e"),
-                        ("clumped", "clumped / near a clump (purple)",
-                         "#5b3a9e"),
-                        ("rejected", "rejected / near a contaminant (red)",
-                         "#b01c1c")):
+    for key, t in (("accepted", "accepted"),
+                   ("clumped", "clumped / near a clump"),
+                   ("rejected", "rejected / near a contaminant")):
         # only the accepted beads are drawn until a box is ticked; these
-        # are window switches, never saved
+        # are window switches, never saved. Each row: a white tick box,
+        # a swatch in the colour the beads are drawn with, a plain label
         show_vars[key] = tk.BooleanVar(win, key == "accepted")   # GC'd
-        cb = gui_check(side, show_vars[key], t, font=F_SHOW,
+        row = tk.Frame(side, bg=GUI_BG)
+        row.pack(anchor="w", fill="x")
+        cb = gui_check(row, show_vars[key], "", font=F_SHOW,
                        command=lambda: layer.refresh())
-        cb.config(fg=col, activeforeground=col)
-        cb.pack(anchor="w")
+        cb.config(selectcolor="white")      # white box, tick when on
+        cb.pack(side="left")
+        tk.Label(row, bg=GUI_COL[key], width=2, bd=1,
+                 relief="solid").pack(side="left", padx=(0, 6))
+        gui_label(row, t, font=F_SHOW).pack(side="left")
     win.show_vars = show_vars
     counts = gui_label(side, "", font=F_SMALL, justify="left")
     counts.pack(anchor="w", pady=(10, 0))
@@ -6394,7 +6458,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     # scroll / keys = zoom (attach_zoom); in manual mode left-click flips
     fig, ax, canvas = gui_image_canvas(main, state.img)
     widget = canvas.get_tk_widget()
-    layer = GuiBeadLayer(fig, ax, show_vars)
+    layer = GuiBeadLayer(fig, ax, show_vars, big_var=manual_mode)
     box = GuiBoxTool(fig, ax, widget, manual_mode,
                      on_change=lambda b: update_counts())
     zoombox = tk.BooleanVar(win, False)
@@ -6430,7 +6494,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
                  "arrow keys = move 1 px      press-drag anywhere = resize "
                  "(away from the centre bigger, toward it smaller)      "
                  "Ctrl+scroll = resize      Enter = set it (green)      Esc = drop it")
-    HINT_FLIP = ("MANUAL ACCEPT / RESIZING      left-click a bead = flip accept / reject      "
+    HINT_FLIP = ("MANUAL ACCEPT / RESIZING      left-click a bead = add / remove it      "
                  "double-click = move / resize it: arrow keys, press-drag, "
                  "Ctrl+scroll      Enter = set it      Esc = cancel")
 
@@ -6459,7 +6523,6 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     def set_circle(x: float, y: float, d: float) -> None:
         """Enter on a blue circle: it becomes an accepted bead (a manual
         pick, green), replacing any object whose centre is inside it."""
-        from matplotlib.patches import Circle
         inside = [i for i, b in enumerate(state.beads)
                   if math.hypot(b.x_px - x, b.y_px - y) <= d / 2]
         b = Bead(x, y, d)
@@ -6470,12 +6533,9 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
             # bead takes seconds on a full slide
             for i in reversed(inside):
                 state.beads.pop(i)
-                layer.patches.pop(i).remove()
+                layer.remove_at(i)
             state.beads.append(b)
-            c = Circle((x, y), max(d / 2, 4), fill=False, lw=1.3,
-                       ec=gui_bead_colour(b))
-            ax.add_patch(c)
-            layer.patches.append(c)
+            layer.add(b)
             gui_refilter(state)
             layer.refresh()
             update_counts()
@@ -6506,8 +6566,9 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         circle.drop()                      # also ends a double-click edit
         widget.config(cursor="hand2" if on else "crosshair")
         show_hint(HINT_FLIP if on else None)
-        set_status("manual mode: left-click a bead to flip accept / reject, "
-                   "double-click to move / resize it"
+        layer.refresh()                    # 2x circles and crosses on / off
+        set_status("manual mode: left-click a bead to add (green) / remove "
+                   "(red dashed) it, double-click to move / resize it"
                    if on else "left-drag = draw the box     "
                               "right-drag = move the view")
 
@@ -6633,18 +6694,15 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         gui_refilter(state)
         layer.refresh()
         update_counts()
-        set_status(f"bead {i} -> {b.manual}")
+        set_status(f"bead {i} {'added (accepted)' if b.accepted else 'removed (rejected)'}"
+                   f"   --   left-click again to undo")
 
     def resized(b, x: float, y: float, d: float) -> None:
         """Enter after a double-click edit: the bead takes the circle's
         centre and size; its decision is left as it was."""
         b.x_px, b.y_px, b.diameter_px = x, y, d
-        if b in layer.beads:
-            c = layer.patches[layer.beads.index(b)]
-            c.center = (x, y)
-            c.set_radius(max(d / 2, 4))
         gui_refilter(state)
-        layer.refresh()
+        layer.refresh()                    # redraws centre, radius, cross
         update_counts()
         set_status(f"bead resized: x {x:.0f}  y {y:.0f}, {d:.0f} px  --  "
                    f"left-click flips, double-click resizes")
