@@ -11,3 +11,5 @@ __pycache__/
 
 # FilterTrainer/ is its own git repository (see FilterTrainer/.gitignore)
 FilterTrainer/
+# filters/ holds trained filters (FilterTrainer .json); optional, local only
+filters/
