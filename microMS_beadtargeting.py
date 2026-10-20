@@ -2158,7 +2158,14 @@ def draw_zoom(path: Path, beads: list[Bead], cfg: dict, T: Transform,
             if n > best:
                 best, bx, by = n, float(cx), float(cy)
 
-    x0, y0 = int(max(bx, 0)), int(max(by, 0))
+    # centre the window on the beads it holds (the search above anchors
+    # it at their corner, which put a lone bead in the top-left corner)
+    hit = (xs >= bx) & (xs < bx + w) & (ys >= by) & (ys < by + h)
+    if hit.any():
+        bx, by = float(xs[hit].mean()) - w / 2, float(ys[hit].mean()) - h / 2
+    bx = min(max(bx, 0), max(img.shape[1] - w, 0))
+    by = min(max(by, 0), max(img.shape[0] - h, 0))
+    x0, y0 = int(bx), int(by)
     x1, y1 = min(x0 + w, img.shape[1]), min(y0 + h, img.shape[0])
     sc = int(z.get("zoom-scale", 3))
 
@@ -2266,13 +2273,24 @@ def draw_distances(path: Path, beads: list[Bead], cfg: dict, T: Transform,
         cv2.putText(vis, f"r {b.diameter_um / 2:.0f} um",
                     (c[0] + 4, c[1] - r_px - 6), font, fs, black, 1,
                     cv2.LINE_AA)
-        # one live shot per ring (distinct distances from the centre)
+        # one live shot per ring (distinct distances from the centre),
+        # each ring's label on its own side of the bead: ring 1 lower
+        # right, ring 2 lower left, then upper right, upper left -- the
+        # radius label has the top
         rings: dict = {}
         for sh in b.shots:
             if not sh.dropped:
                 dist = round(math.hypot(sh.x_um - b.x_um, sh.y_um - b.y_um))
-                rings.setdefault(dist, sh)
-        for k, (dist, sh) in enumerate(sorted(rings.items())):
+                rings.setdefault(dist, []).append(sh)
+        sides = (30.0, 150.0, -30.0, -150.0)          # image degrees, y down
+        for k, (dist, group) in enumerate(sorted(rings.items())):
+            want = math.radians(sides[k % len(sides)])
+
+            def off(sh):
+                px = T.um_to_px([sh.x_um, sh.y_um])[0]
+                a = math.atan2(px[1] - b.y_px, px[0] - b.x_px)
+                return abs((a - want + math.pi) % (2 * math.pi) - math.pi)
+            sh = min(group, key=off)
             px = T.um_to_px([sh.x_um, sh.y_um])[0]
             pt = at(px[0], px[1])
             cv2.line(vis, c, pt, black, 1, cv2.LINE_AA)
@@ -2280,10 +2298,11 @@ def draw_distances(path: Path, beads: list[Bead], cfg: dict, T: Transform,
             rr = max(int(crater_px / 2 * sc), 3)
             dx, dy = pt[0] - c[0], pt[1] - c[1]
             n = max(math.hypot(dx, dy), 1.0)
-            lx = int(pt[0] + dx / n * (rr + 4)) + (0 if dx >= 0 else -70)
-            ly = int(pt[1] + dy / n * (rr + 4)) + (12 if dy >= 0 else -4)
-            cv2.putText(vis, f"shot {dist:.0f} um", (lx, ly),
-                        font, fs, black, 1, cv2.LINE_AA)
+            text = f"shot {dist:.0f} um"
+            tw = cv2.getTextSize(text, font, fs, 1)[0][0]
+            lx = int(pt[0] + dx / n * (rr + 6)) - (tw if dx < 0 else 0)
+            ly = int(pt[1] + dy / n * (rr + 6)) + (12 if dy >= 0 else -4)
+            cv2.putText(vis, text, (lx, ly), font, fs, black, 1, cv2.LINE_AA)
 
     cv2.putText(vis, f"green = bead outline   blue = shot   orange = dropped"
                      f"   black = distance from the bead centre, um",
@@ -2381,7 +2400,7 @@ def show_pyramid(fig, ax, img, **imshow_kw):
     h, w = img.shape[:2]
     full = (-0.5, w - 0.5, h - 0.5, -0.5)
 
-    state = {"key": None, "busy": False}
+    state = {"key": None, "busy": False, "fast": False}
     im = ax.imshow(pyr[-1], extent=full, **imshow_kw)
     ax.set_xlim(full[0], full[1])
     ax.set_ylim(full[2], full[3])
@@ -2405,6 +2424,11 @@ def show_pyramid(fig, ax, img, **imshow_kw):
                 break
         else:
             level = 0
+        # while a drag or a scroll is in progress: one level coarser (a
+        # quarter of the pixels to colour and resample, so about 3x the
+        # frame rate); the full-quality frame follows when it stops
+        if state["fast"]:
+            level = min(level + 1, len(pyr) - 1)
 
         f = pyr[level].shape[1] / w
         cx0 = int(max(x0 * f, 0)); cy0 = int(max(y0 * f, 0))
@@ -2432,6 +2456,14 @@ def show_pyramid(fig, ax, img, **imshow_kw):
     ax.callbacks.connect("ylim_changed", refresh)
     fig.canvas.mpl_connect("draw_event", refresh)
 
+    def set_fast(on: bool) -> None:
+        """attach_zoom / gui_attach_drag_pan: coarse frames while the
+        view is moving, a full-quality one when it stops."""
+        if state["fast"] != bool(on):
+            state["fast"] = bool(on)
+            refresh()
+    fig.pyramid_fast = set_fast
+
     log(f"image pyramid: {len(pyr)} levels, "
         f"{' '.join(f'{q.shape[1]}x{q.shape[0]}' for q in pyr)}")
     return im
@@ -2452,6 +2484,47 @@ def show_pyramid(fig, ax, img, **imshow_kw):
 # back into the next delta, and the image accelerates away under the
 # cursor.
 # =====================================================================
+
+FAST_SETTLE_MS = 150        # full-quality redraw this long after the last wheel notch
+
+
+def pan_preview(fig):
+    """
+    Lag-free dragging: while the button is down the picture already on
+    the tk canvas is slid by the mouse delta (a canvas move, about a
+    millisecond) instead of re-rendering the figure (100-200 ms a frame
+    at window size); the real frame is rendered once, on release.
+    Returns (shift(dx, dy), reset()) -- shift takes screen deltas in
+    matplotlib's convention (y up), reset puts the picture back before
+    the limits are set and the figure redrawn. Both are no-ops on a
+    backend without a tk canvas.
+    """
+    tkc = getattr(fig.canvas, "_tkcanvas", None)
+    offset = [0, 0]
+
+    def item():
+        ids = tkc.find_withtag("all") if tkc is not None else ()
+        return ids[0] if ids else None
+
+    def shift(dx: float, dy: float) -> None:
+        i = item()
+        if i is None:
+            return
+        mx, my = int(round(dx)) - offset[0], -int(round(dy)) - offset[1]
+        if mx or my:
+            tkc.move(i, mx, my)
+            offset[0] += mx
+            offset[1] += my
+            tkc.update_idletasks()
+
+    def reset() -> None:
+        i = item()
+        if i is not None and (offset[0] or offset[1]):
+            tkc.move(i, -offset[0], -offset[1])
+        offset[0] = offset[1] = 0
+
+    return shift, reset
+
 
 def attach_zoom(fig, ax, step: float = 1.3, arrow_zoom=True):
     """Wire scroll zoom, middle-drag pan and keyboard shortcuts.
@@ -2495,22 +2568,40 @@ def attach_zoom(fig, ax, step: float = 1.3, arrow_zoom=True):
             ax.set_ylim(*home["lim"][1])
             fig.canvas.draw_idle()
 
+    # coarse frames while the wheel keeps turning; full quality
+    # FAST_SETTLE_MS after the last notch (see show_pyramid.set_fast)
+    fast = getattr(fig, "pyramid_fast", None)
+    settle = {"id": None}
+
+    def settled():
+        settle["id"] = None
+        if fast:
+            fast(False)
+
     def on_scroll(ev):
         if ev.inaxes is not ax or ev.xdata is None:
             return
+        if getattr(ev, "key", None) == "control":
+            return                          # Ctrl+scroll: the circle tool's
+        if fast:
+            fast(True)
+            widget = fig.canvas.get_tk_widget()
+            if settle["id"] is not None:
+                widget.after_cancel(settle["id"])
+            settle["id"] = widget.after(FAST_SETTLE_MS, settled)
         # Zoom about the cursor so the feature under the pointer stays
         # put -- the behaviour every image viewer has.
         scale_about(ev.xdata, ev.ydata,
                     1 / step if ev.button == "up" else step)
+
+    shift, reset = pan_preview(fig)
 
     def on_press(ev):
         if ev.button == 2 and ev.inaxes is ax:
             remember_home()
             pan["px"] = (ev.x, ev.y, ax.get_xlim(), ax.get_ylim())
 
-    def on_motion(ev):
-        if pan["px"] is None or ev.x is None:
-            return
+    def apply_pan(ev):
         x0px, y0px, xl, yl = pan["px"]
         sx = (xl[1] - xl[0]) / max(ax.bbox.width, 1)
         sy = (yl[1] - yl[0]) / max(ax.bbox.height, 1)
@@ -2520,8 +2611,17 @@ def attach_zoom(fig, ax, step: float = 1.3, arrow_zoom=True):
         ax.set_ylim(yl[0] + dy, yl[1] + dy)
         fig.canvas.draw_idle()
 
+    def on_motion(ev):
+        if pan["px"] is None or ev.x is None:
+            return
+        # slide the rendered picture; the frame is rendered on release
+        shift(ev.x - pan["px"][0], ev.y - pan["px"][1])
+
     def on_release(ev):
-        if ev.button == 2:
+        if ev.button == 2 and pan["px"] is not None:
+            reset()
+            if ev.x is not None:
+                apply_pan(ev)
             pan["px"] = None
 
     def on_key(ev):
@@ -2707,6 +2807,12 @@ def results_dir(cfg: dict, subfolder: str | None = None) -> Path:
     """
     root = HERE / cfg["output"].get("results-dir", "RESULTS")
     if subfolder:
+        # the name typed at Save (output.run-name) goes between the
+        # time stamp and the command: "<stamp> <name> review"
+        name = str(cfg["output"].get("run-name") or "").strip()
+        if name:
+            stamp, _, cmd = subfolder.partition(" ")
+            subfolder = f"{stamp} {name} {cmd}".strip()
         root = root / subfolder
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -3240,10 +3346,13 @@ def gui_toggle(parent, var, text: str, command=None, font=F_BTN):
                           padx=6, pady=2)
 
 
-def gui_dropdown(parent, var, options: list, command=None):
+def gui_dropdown(parent, var, options: list, command=None, tips=None):
     """Light grey raised dropdown, sized to the longest option so it
-    never changes width. Hovered entries highlight navy/white."""
-    width = max(len(o) for o in options) + 2
+    never changes width. Hovered entries highlight navy/white. A None
+    in `options` is a thin separator line. `tips` {option: text} shows
+    the text in a small box beside the menu while that entry is
+    highlighted (mouse over it, before the click)."""
+    width = max(len(o) for o in options if o) + 2
     mb = tk.Menubutton(parent, textvariable=var, width=width, font=F_BOX,
                        bg=GUI_BOX, fg=GUI_TXT, activebackground=GUI_BOX,
                        activeforeground=GUI_TXT, relief="raised", bd=2,
@@ -3252,9 +3361,42 @@ def gui_dropdown(parent, var, options: list, command=None):
                    activebackground=GUI_NAVY, activeforeground=GUI_WHITE,
                    font=F_BOX, relief="raised", bd=2)
     for o in options:
-        menu.add_radiobutton(label=o, variable=var, value=o,
-                             command=command)
+        if o is None:
+            menu.add_separator()
+        else:
+            menu.add_radiobutton(label=o, variable=var, value=o,
+                                 command=command)
     mb.config(menu=menu)
+    if tips:
+        tip = {"win": None}
+
+        def hide(_e=None):
+            if tip["win"] is not None:
+                tip["win"].destroy()
+                tip["win"] = None
+
+        def select(_e=None):
+            hide()
+            try:
+                i = menu.index("active")
+                text = tips.get(menu.entrycget(i, "label"), "") if i is not None else ""
+            except tk.TclError:
+                text = ""
+            if not text:
+                return
+            tip["win"] = tk.Toplevel(menu, bg=GUI_DARK)
+            tip["win"].overrideredirect(True)
+            tk.Label(tip["win"], text=text, font=F_SMALL, bg=GUI_LAVENDER,
+                     fg=GUI_TXT, justify="left", padx=6, pady=3).pack(
+                         padx=1, pady=1)
+            # beside the menu, level with the highlighted entry
+            x = menu.winfo_rootx() + menu.winfo_width() + 2
+            y = menu.winfo_rooty() + menu.yposition(i)
+            tip["win"].geometry(f"+{x}+{y}")
+
+        menu.bind("<<MenuSelect>>", select)
+        menu.bind("<Unmap>", hide)
+        menu.bind("<Leave>", hide)
     arrow = tk.Label(mb, text="▼", bg=GUI_BOX, fg=GUI_TXT, font=F_TINY_B)
     arrow.place(relx=1.0, rely=0.5, anchor="e", x=-4)
     # the label sits on top of the button and would swallow the click
@@ -3377,9 +3519,12 @@ def _quiet_datalim_note() -> None:
 def gui_attach_drag_pan(fig, ax, widget=None, when=None, button=1):
     """Dragging with `button` moves the view. Same pixel-delta method
     as the middle-drag pan in attach_zoom, so the image follows the
-    mouse exactly instead of accelerating away. `when(ev)` can veto a
-    drag (the box tool may share the button)."""
+    mouse exactly instead of accelerating away: the rendered picture
+    slides under the mouse (pan_preview) and the frame is rendered once
+    on release. `when(ev)` can veto a drag (the box tool may share the
+    button)."""
     drag = {"px": None}
+    shift, reset = pan_preview(fig)
 
     def on_press(ev):
         if (ev.button == button and ev.inaxes is ax
@@ -3391,18 +3536,21 @@ def gui_attach_drag_pan(fig, ax, widget=None, when=None, button=1):
     def on_motion(ev):
         if drag["px"] is None or ev.x is None:
             return
-        x0px, y0px, xl, yl = drag["px"]
-        sx = (xl[1] - xl[0]) / max(ax.bbox.width, 1)
-        sy = (yl[1] - yl[0]) / max(ax.bbox.height, 1)
-        dx = -(ev.x - x0px) * sx
-        dy = -(ev.y - y0px) * sy
-        ax.set_xlim(xl[0] + dx, xl[1] + dx)
-        ax.set_ylim(yl[0] + dy, yl[1] + dy)
-        fig.canvas.draw_idle()
+        shift(ev.x - drag["px"][0], ev.y - drag["px"][1])
 
     def on_release(ev):
         if ev.button == button and drag["px"] is not None:
+            reset()
+            x0px, y0px, xl, yl = drag["px"]
             drag["px"] = None
+            if ev.x is not None:
+                sx = (xl[1] - xl[0]) / max(ax.bbox.width, 1)
+                sy = (yl[1] - yl[0]) / max(ax.bbox.height, 1)
+                dx = -(ev.x - x0px) * sx
+                dy = -(ev.y - y0px) * sy
+                ax.set_xlim(xl[0] + dx, xl[1] + dx)
+                ax.set_ylim(yl[0] + dy, yl[1] + dy)
+                fig.canvas.draw_idle()
             if widget is not None:
                 widget.config(cursor="")
 
@@ -3480,11 +3628,18 @@ class GuiProgress:
     """
     A progress bar in a window, fed by the console Bar through
     _BAR_HOOKS: it shows the bars whose title is in `titles` ("analyze",
-    or "review" and "run") and empties itself when they finish. Redrawn
-    at most every 50 ms, and only between the pipeline's own steps --
-    one long OpenCV call cannot report progress, so the bar holds its
-    last value until the next step.
+    or "review" and "run") and empties itself when they finish.
+
+    The fill follows TIME, not the stage count: each stage is weighted
+    by how long it took the last time this command ran (kept in
+    SAVES/progress_times.json), and inside a stage the fill advances
+    with the time elapsed, capped just short of the stage's share. The
+    first run of a command weights the stages equally. Redrawn at most
+    every 50 ms and only when the pipeline reports (a step or a tick) --
+    one long OpenCV call cannot report, so the bar holds until it ends.
     """
+
+    TIMES_NAME = "progress_times.json"      # in SAVES/
 
     def __init__(self, parent, titles: tuple, height: int = 14):
         import time
@@ -3498,6 +3653,7 @@ class GuiProgress:
                                             text="", font=F_SMALL, fill=GUI_TXT)
         self._last, self._stage = 0.0, None
         self._time = time
+        self._run = None                 # (title, stage starts, durations)
         _BAR_HOOKS.append(self.update)
         self.widget.bind("<Destroy>", self._gone, add="+")
 
@@ -3505,17 +3661,67 @@ class GuiProgress:
         if self.update in _BAR_HOOKS:
             _BAR_HOOKS.remove(self.update)
 
+    @staticmethod
+    def _load_times() -> dict:
+        import json
+        try:
+            return json.loads((SAVES_DIR / GuiProgress.TIMES_NAME).read_text())
+        except (OSError, ValueError):
+            return {}
+
+    @staticmethod
+    def _save_times(title: str, durations: list) -> None:
+        import json
+        data = GuiProgress._load_times()
+        data[title] = [round(float(d), 3) for d in durations]
+        try:
+            gui_saves_dir()
+            (SAVES_DIR / GuiProgress.TIMES_NAME).write_text(json.dumps(data, indent=1))
+        except OSError:
+            pass
+
+    def _fraction(self, bar) -> float:
+        """Time-weighted progress of `bar`, 0-1."""
+        now = self._time.time()
+        title, starts, _ = self._run
+        weights = [max(float(w), 0.01) for w in (self._load_times().get(title) or [])]
+        if not weights:
+            weights = [1.0] * bar.steps
+        elif len(weights) != bar.steps:     # a command declares more steps
+            mean = sum(weights) / len(weights)   # than it reports: pad
+            weights = (weights + [mean] * bar.steps)[:bar.steps]
+        total = float(sum(weights))
+        if not bar.i:
+            return 0.0
+        done = sum(weights[:bar.i - 1])
+        w = weights[bar.i - 1]
+        if bar.frac is not None:            # the stage reports its own progress
+            inside = bar.frac * w
+        else:                               # elapsed time, short of the stage's share
+            inside = min(now - starts[bar.i - 1], 0.95 * w)
+        return min(max((done + inside) / total, 0.0), 1.0)
+
     def update(self, bar) -> None:
         if not self.widget.winfo_exists():
             raise RuntimeError("progress bar gone")   # _bar_notify drops us
+        now = self._time.time()
         if bar is None:
+            if self._run is not None:       # finished: remember the stage times
+                title, starts, _ = self._run
+                starts.append(now)
+                self._save_times(title, [b - a for a, b in zip(starts, starts[1:])])
+                self._run = None
             frac, label = 0.0, ""
         elif bar.title not in self.titles:
             return
         else:
-            frac = (bar.i - 1 + (bar.frac or 0.0)) / bar.steps if bar.i else 0.0
+            if self._run is None or self._run[0] != bar.title:
+                self._run = (bar.title, [], None)
+            starts = self._run[1]
+            while len(starts) < bar.i:      # a new stage began
+                starts.append(now)
+            frac = self._fraction(bar)
             label = f"{bar.title}: {bar.label}  {frac * 100:3.0f}%"
-        now = self._time.time()
         stage = (label.split("  ")[0], bar is None)
         if stage == self._stage and now - self._last < 0.05:
             return
@@ -3529,6 +3735,7 @@ class GuiProgress:
 
 GUI_PENDING = "#1f77b4"      # a drawn circle not yet accepted (blue)
 GUI_ARROW_STEP_PX = 1        # one arrow press moves it one image pixel
+GUI_SCROLL_STEP_PX = 1       # one Ctrl+scroll notch changes its radius this much
 GUI_ARROW_PAN = 0.10         # fiducial window: one press pans 10 % of the view
 
 
@@ -3572,10 +3779,20 @@ class GuiCircleTool:
         fig.canvas.mpl_connect("motion_notify_event", self._motion)
         fig.canvas.mpl_connect("button_release_event", self._release)
         fig.canvas.mpl_connect("key_press_event", self._key)
+        fig.canvas.mpl_connect("scroll_event", self._scroll)
 
     @property
     def pending(self):
         return self.centre
+
+    def _scroll(self, ev):
+        """Ctrl+scroll: the pending circle grows or shrinks by
+        GUI_SCROLL_STEP_PX per notch (plain scroll still zooms)."""
+        if self.centre is None or getattr(ev, "key", None) != "control":
+            return
+        self.r = max(self.r + (GUI_SCROLL_STEP_PX if ev.button == "up"
+                               else -GUI_SCROLL_STEP_PX), 1.0)
+        self._show()
 
     def _show(self):
         self.ring.center = self.centre
@@ -3587,8 +3804,8 @@ class GuiCircleTool:
         d_um = 2 * self.r * self.um_per_px()
         self.status(f"circle at x {self.centre[0]:.0f}  y {self.centre[1]:.0f}"
                     f"   diameter {d_um:.0f} um ({2 * self.r:.0f} px)"
-                    "   --   arrows move it, press-drag anywhere resizes it, "
-                    "Enter sets it, Esc drops it")
+                    "   --   arrows move it, press-drag anywhere or "
+                    "Ctrl+scroll resizes it, Enter sets it, Esc drops it")
 
     def drop(self, why: str = ""):
         self.centre, self.r, self.drag = None, 0.0, None
@@ -4843,6 +5060,10 @@ def gui_run_cfg(state: GuiState, fids: list) -> dict:
     if state.path is not None:
         cfg["input"]["scan"] = str(state.path)
     cfg["output"]["review-show"] = False
+    if state.save_path is not None:
+        # "<stamp>_<name>.json" -> the name, for the results folder
+        stem = state.save_path.stem
+        cfg["output"]["run-name"] = stem[18:] if len(stem) > 18 and stem[17] == "_" else ""
     if state.beads:
         gui_refilter(state)
         gui_write_run_inputs(state, cfg)
@@ -5313,25 +5534,25 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
                                  "trained"):
         v["method"].set("default")          # a save made under the old names
     upload_entry = "upload filter template..."
+    # what each method does: shown beside the menu while the entry is
+    # highlighted (mouse over it, before the click)
     gui_dropdown(side, v["method"],
-                 ["default", "quick", "strict", "broad",
-                  upload_entry]).pack(
-        anchor="w", pady=(2, 2), fill="x")
+                 ["default", "quick", "strict", "broad", None,
+                  upload_entry],
+                 tips={"default": "global threshold sweep",
+                       "quick": "flat-field subtraction",
+                       "strict": "both combined, keep the best 5 %",
+                       "broad": "any faint round blob in the size window,\n"
+                                "all accepted -- reject by hand; the\n"
+                                "stringency slider keeps only the stronger\n"
+                                "blobs (100 = all of them)",
+                       upload_entry: "a filter trained with FilterTrainer;\n"
+                                     "broad's candidates re-scored (or the\n"
+                                     "trained template matched), the slider\n"
+                                     "keeps the stronger ones (100 = all)"}
+                 ).pack(anchor="w", pady=(2, 4), fill="x")
     # the loaded filter's name, under the dropdown while it is in use
     filter_lbl = gui_small(side, "", justify="left", anchor="w")
-    help_lbl = gui_small(side, "default   global threshold sweep\n"
-                    "quick      flat-field subtraction\n"
-                    "strict     both combined, keep the best 5 %\n"
-                    "broad      any faint round blob in the size\n"
-                    "              window, all accepted -- reject by hand;\n"
-                    "              the slider below keeps only the\n"
-                    "              stronger blobs (100 = all of them)\n"
-                    "upload    a filter trained with FilterTrainer;\n"
-                    "              broad's candidates re-scored (or the\n"
-                    "              trained template matched), the slider\n"
-                    "              keeps the stronger ones (100 = all)",
-              justify="left", anchor="w")
-    help_lbl.pack(anchor="w", fill="x", pady=(0, 4))
 
     def upload_filter() -> None:
         """The last dropdown entry: pick a FilterTrainer .json."""
@@ -5357,14 +5578,46 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     # selected (see GUI_BROAD_SWING)
     trow = tk.Frame(side, bg=GUI_BG)
     trow.pack(anchor="w", fill="x", pady=(0, 8))
-    gui_label(trow, "stringency", font=F_SMALL).pack(side="left")
-    tk.Scale(trow, variable=v["broad_stringency"], from_=1, to=100,
-             orient="horizontal", resolution=1, length=px(120),
-             font=F_SMALL, bg=GUI_BG, fg=GUI_TXT,
-             troughcolor=GUI_BOX, activebackground=GUI_BOX,
-             highlightthickness=0, bd=1, sliderrelief="raised").pack(
-                 side="left", padx=(6, 0))
-    gui_small(trow, "%").pack(side="left", padx=(2, 0))
+    gui_label(trow, "stringency").pack(anchor="w")
+    srow = tk.Frame(trow, bg=GUI_BG)
+    srow.pack(anchor="w", fill="x")
+    # a wide slider with a big grip, the mouse wheel steps it, and a
+    # box to type the value (1-100)
+    sbar = tk.Scale(srow, variable=v["broad_stringency"], from_=1, to=100,
+                    orient="horizontal", resolution=1, length=px(170),
+                    width=px(18), sliderlength=px(30),
+                    font=F_SMALL, bg=GUI_BG, fg=GUI_TXT,
+                    troughcolor=GUI_BOX, activebackground=GUI_LIGHT,
+                    highlightthickness=0, bd=1, sliderrelief="raised")
+    sbar.pack(side="left")
+    sbox_var = tk.StringVar(win, v["broad_stringency"].get())
+    sbox = gui_box(srow, sbox_var, 4)
+    sbox.pack(side="left", padx=(6, 2))
+    gui_small(srow, "%").pack(side="left")
+
+    def slider_wheel(e):
+        sbar.set(min(max(int(float(sbar.get())) + (1 if e.delta > 0 else -1),
+                         1), 100))
+        return "break"
+    sbar.bind("<MouseWheel>", slider_wheel)
+
+    def sbox_apply(_e=None):
+        try:
+            val = min(max(int(round(float(sbox_var.get()))), 1), 100)
+        except ValueError:
+            val = int(float(v["broad_stringency"].get() or 100))
+        v["broad_stringency"].set(str(val))
+        sbox_var.set(str(val))
+    sbox.bind("<Return>", sbox_apply)
+    sbox.bind("<FocusOut>", sbox_apply)
+
+    def sbox_follow(*_a):
+        if sbox.winfo_exists() and win.focus_get() is not sbox:
+            try:
+                sbox_var.set(f"{int(float(v['broad_stringency'].get()))}")
+            except ValueError:
+                pass
+    v["broad_stringency"].trace_add("write", sbox_follow)
     analyze_btn = gui_button(side, "Analyze box", lambda: analyze(),
                              font=F_BIG)
     analyze_btn.pack(fill="x", pady=(4, 0))
@@ -5382,7 +5635,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
             if m == "trained" and state.filter is not None:
                 filter_lbl.config(text=f"filter: {Path(state.filter['path']).name}"
                                        f"\n({state.filter['kind']})")
-                filter_lbl.pack(anchor="w", fill="x", before=help_lbl)
+                filter_lbl.pack(anchor="w", fill="x", before=analyze_btn)
             else:
                 filter_lbl.pack_forget()
     v["method"].trace_add("write", step_state)
@@ -5466,6 +5719,25 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         gui_attach_drag_pan(fig, ax, widget, button=3)
     widget.config(cursor="crosshair")
 
+    # the actions of the manual modes, in a box over the bottom of the
+    # image while one of them is on
+    hint = tk.Label(main, font=F_SMALL, bg=GUI_LAVENDER, fg=GUI_TXT,
+                    justify="left", padx=8, pady=4, relief="raised", bd=2)
+    HINT_DRAW = ("MANUAL SELECTION      click a bead centre = circle of the bead size      "
+                 "arrow keys = move 1 px      press-drag anywhere = resize "
+                 "(away from the centre bigger, toward it smaller)      "
+                 "Ctrl+scroll = resize      Enter = set it (green)      Esc = drop it")
+    HINT_FLIP = ("MANUAL ACCEPT / RESIZING      left-click a bead = flip accept / reject      "
+                 "double-click = move / resize it: arrow keys, press-drag, "
+                 "Ctrl+scroll      Enter = set it      Esc = cancel")
+
+    def show_hint(text: str | None) -> None:
+        if text:
+            hint.config(text=text, wraplength=max(widget.winfo_width() - 40, 300))
+            hint.place(in_=widget, relx=0.5, rely=1.0, y=-10, anchor="s")
+        else:
+            hint.place_forget()
+
     def draw_changed() -> None:
         """Manual selection and manual accept / reject share the left
         button, so one switches the other off."""
@@ -5473,6 +5745,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
             manual_mode.set(False)
             circle.drop()
             widget.config(cursor="crosshair")
+            show_hint(HINT_DRAW)
             set_status("manual selection: click a bead centre for a "
                        "bead-size circle; arrows move, press-drag resizes, "
                        "Enter sets it")
@@ -5529,6 +5802,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
             draw_mode.set(False)
         circle.drop()                      # also ends a double-click edit
         widget.config(cursor="hand2" if on else "crosshair")
+        show_hint(HINT_FLIP if on else None)
         set_status("manual mode: left-click a bead to flip accept / reject, "
                    "double-click to move / resize it"
                    if on else "left-drag = draw the box     "
