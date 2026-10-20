@@ -1541,7 +1541,15 @@ MAP_TILE_OVERLAP = 0.05     # tiles overlap by this fraction of their size
 # height = picture width * MAP_LABEL_FRACTION, never under MAP_LABEL_PX.
 MAP_LABEL_FRACTION = 1 / 130
 MAP_LABEL_PX = 16
-MAP_OVERVIEW_PX = 8000      # the whole-scan map is reduced to this longer side
+# Map images are JPEGs no larger than MAP_MAX_FILE_BYTES: the overview
+# is rendered at MAP_OVERVIEW_PX and each tile at MAP_TILE_PX on its
+# longer side (never upscaled), labels drawn after scaling; if a file
+# still comes out too big, _map_write lowers the JPEG quality, then
+# the size, until it fits.
+MAP_OVERVIEW_PX = 4000
+MAP_TILE_PX = 2000
+MAP_MAX_FILE_BYTES = 1_000_000
+MAP_JPEG_QUALITY = 85
 MAP_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 RING_LETTERS = "XYZ"         # ring 1, 2, 3 in a position name (AB01X1)
 
@@ -2313,9 +2321,10 @@ def draw_overlay(path: Path, beads: list[Bead], shots: list[Shot],
 
 
 def _map_annotate(canvas, beads: list[Bead], cw: float, ch: float,
-                  cols: int, rows: int, f: float, label_px: float) -> None:
+                  cols: int, rows: int, f: float, label_px: float,
+                  x0: float = 0.0, y0: float = 0.0) -> None:
     """Draw the naming grid, its letters and the labelled beads onto
-    canvas, whose pixels are the scan's scaled by f."""
+    canvas, which shows the scan from (x0, y0) scaled by f."""
     import cv2
     H, W = canvas.shape[:2]
     grid_col = (0, 200, 255)          # BGR: amber grid and letters
@@ -2327,28 +2336,59 @@ def _map_annotate(canvas, beads: list[Bead], cw: float, ch: float,
     thick = max(1, int(round(scale)))
     lw = max(1, int(round(label_px / 8.0)))
 
+    def sx(x: float) -> int:
+        return int(round((x - x0) * f))
+
+    def sy(y: float) -> int:
+        return int(round((y - y0) * f))
+
     for c in range(1, cols):
-        x = int(round(c * cw * f))
-        cv2.line(canvas, (x, 0), (x, H - 1), grid_col, lw)
+        x = sx(c * cw)
+        if 0 <= x < W:
+            cv2.line(canvas, (x, 0), (x, H - 1), grid_col, lw)
     for r in range(1, rows):
-        y = int(round(r * ch * f))
-        cv2.line(canvas, (0, y), (W - 1, y), grid_col, lw)
+        y = sy(r * ch)
+        if 0 <= y < H:
+            cv2.line(canvas, (0, y), (W - 1, y), grid_col, lw)
     big = scale * 2.5
     for c in range(cols):
-        x = int(round((c + 0.5) * cw * f))
-        cv2.putText(canvas, MAP_LETTERS[c], (x, int(base * big) + lw + 4),
-                    font, big, grid_col, thick * 2, cv2.LINE_AA)
+        x = sx((c + 0.5) * cw)
+        if 0 <= x < W:
+            cv2.putText(canvas, MAP_LETTERS[c], (x, int(base * big) + lw + 4),
+                        font, big, grid_col, thick * 2, cv2.LINE_AA)
     for r in range(rows):
-        y = int(round((r + 0.5) * ch * f))
-        cv2.putText(canvas, MAP_LETTERS[r], (lw + 4, y), font, big,
-                    grid_col, thick * 2, cv2.LINE_AA)
+        y = sy((r + 0.5) * ch)
+        if 0 <= y < H:
+            cv2.putText(canvas, MAP_LETTERS[r], (lw + 4, y), font, big,
+                        grid_col, thick * 2, cv2.LINE_AA)
 
     for b in beads:
-        x, y = int(round(b.x_px * f)), int(round(b.y_px * f))
+        x, y = sx(b.x_px), sy(b.y_px)
         rad = max(int(round(b.diameter_px / 2.0 * f)) + 2, lw + 2)
+        if x < -4 * rad or y < -4 * rad or x > W + 4 * rad or y > H + 4 * rad:
+            continue
         cv2.circle(canvas, (x, y), rad, bead_col, lw, cv2.LINE_AA)
         cv2.putText(canvas, b.name, (x + rad + 2, y - rad - 2), font,
                     scale, text_col, thick, cv2.LINE_AA)
+
+
+def _map_write(path: Path, img) -> Path:
+    """Write img as a JPEG of at most MAP_MAX_FILE_BYTES, lowering the
+    quality (down to 50) and then the size until it fits."""
+    import cv2
+    q, cur = MAP_JPEG_QUALITY, img
+    while True:
+        ok, buf = cv2.imencode(".jpg", cur, [cv2.IMWRITE_JPEG_QUALITY, q])
+        if not ok:
+            raise RuntimeError(f"could not encode {path.name}")
+        if buf.nbytes <= MAP_MAX_FILE_BYTES or max(cur.shape[:2]) <= 400:
+            path.write_bytes(buf.tobytes())
+            return path
+        if q > 50:
+            q -= 10
+        else:
+            cur = cv2.resize(cur, None, fx=0.8, fy=0.8,
+                             interpolation=cv2.INTER_AREA)
 
 
 def draw_bead_map(prefix: Path, beads: list[Bead], cfg: dict,
@@ -2358,20 +2398,21 @@ def draw_bead_map(prefix: Path, beads: list[Bead], cfg: dict,
     The bead map ('Run and export map'): the scan with the naming
     grid drawn over it, its column letters along the top and row
     letters down the left, and every accepted bead circled and
-    labelled with its grid name. Written as
+    labelled with its grid name. Written as JPEGs of at most
+    MAP_MAX_FILE_BYTES each:
 
-        <prefix>_map.png            the whole scan, reduced to
-                                    MAP_OVERVIEW_PX on its longer side
-        <prefix>_map_01.png ...     MAP_TILES equal full-resolution
-                                    tiles (overlapping by
+        <prefix>_map.jpg            the whole scan, MAP_OVERVIEW_PX on
+                                    its longer side
+        <prefix>_map_01.jpg ...     MAP_TILES equal tiles, MAP_TILE_PX
+                                    on the longer side (overlapping by
                                     MAP_TILE_OVERLAP so no label is
                                     cut), laid out to keep tiles close
                                     to square
         <prefix>_map_legend.txt     per grid cell, each bead's stage
                                     and pixel coordinates
 
-    Labels are sized to the picture they sit on (MAP_LABEL_FRACTION).
-    Returns the files written.
+    Labels are drawn after scaling and sized to the picture they sit
+    on (MAP_LABEL_FRACTION). Returns the files written.
     """
     import cv2
     img = None
@@ -2383,6 +2424,28 @@ def draw_bead_map(prefix: Path, beads: list[Bead], cfg: dict,
     H, W = img.shape[:2]
     acc = [b for b in beads if b.accepted and b.name]
     written = []
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    base = cv2.getTextSize("A", font, 1.0, 1)[0][1]
+
+    def render(x0: int, y0: int, x1: int, y1: int, longest: int):
+        """The scan region scaled to `longest` on its longer side (never
+        upscaled), annotated; returns (canvas, f, label_px)."""
+        crop = img[y0:y1, x0:x1]
+        f = min(1.0, longest / float(max(crop.shape[:2])))
+        small = (cv2.resize(crop, (max(1, int(round(crop.shape[1] * f))),
+                                   max(1, int(round(crop.shape[0] * f)))),
+                            interpolation=cv2.INTER_AREA)
+                 if f < 1.0 else crop)
+        canvas = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
+        label_px = max(MAP_LABEL_PX, canvas.shape[1] * MAP_LABEL_FRACTION)
+        _map_annotate(canvas, acc, cw, ch, cols, rows, f, label_px, x0, y0)
+        return canvas, f, label_px
+
+    # the whole scan
+    overview, _, _ = render(0, 0, W, H, MAP_OVERVIEW_PX)
+    written.append(_map_write(prefix.with_name(prefix.name + "_map.jpg"),
+                              overview))
+    del overview
 
     # tiles: the (rows x cols) split of MAP_TILES whose tiles are
     # closest to square for this scan
@@ -2397,13 +2460,6 @@ def draw_bead_map(prefix: Path, beads: list[Bead], cfg: dict,
     _, tr, tc = best
     tw, th = W / tc, H / tr
     ox, oy = tw * MAP_TILE_OVERLAP, th * MAP_TILE_OVERLAP
-
-    canvas = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    label_px = max(MAP_LABEL_PX, tw * MAP_LABEL_FRACTION)
-    _map_annotate(canvas, acc, cw, ch, cols, rows, 1.0, label_px)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    base = cv2.getTextSize("A", font, 1.0, 1)[0][1]
-    hdr = label_px * 1.5 / base
     k = 0
     for r in range(tr):
         for c in range(tc):
@@ -2412,26 +2468,13 @@ def draw_bead_map(prefix: Path, beads: list[Bead], cfg: dict,
             x1 = int(min(W, math.ceil((c + 1) * tw + ox)))
             y0 = int(max(0, math.floor(r * th - oy)))
             y1 = int(min(H, math.ceil((r + 1) * th + oy)))
-            tile = canvas[y0:y1, x0:x1].copy()
+            tile, _, label_px = render(x0, y0, x1, y1, MAP_TILE_PX)
+            hdr = label_px * 1.5 / base
             label = f"map {k}/{MAP_TILES}  px x {x0}-{x1}  y {y0}-{y1}"
             cv2.putText(tile, label, (6, int(base * hdr) + 6), font, hdr,
                         (0, 0, 255), max(1, int(round(hdr)) * 2), cv2.LINE_AA)
-            tp = prefix.with_name(f"{prefix.name}_map_{k:02d}.png")
-            cv2.imwrite(str(tp), tile)
-            written.append(tp)
-    del canvas
-
-    # the whole scan, reduced, with labels sized for that picture
-    f = min(1.0, MAP_OVERVIEW_PX / float(max(W, H)))
-    small = (cv2.resize(img, (max(1, int(round(W * f))),
-                              max(1, int(round(H * f)))),
-                        interpolation=cv2.INTER_AREA) if f < 1.0 else img)
-    overview = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
-    _map_annotate(overview, acc, cw, ch, cols, rows, f,
-                  max(MAP_LABEL_PX, overview.shape[1] * MAP_LABEL_FRACTION))
-    full = prefix.with_name(prefix.name + "_map.png")
-    cv2.imwrite(str(full), overview)
-    written.insert(0, full)
+            written.append(_map_write(
+                prefix.with_name(f"{prefix.name}_map_{k:02d}.jpg"), tile))
 
     # legend
     um_per_px = T.um_per_px if T is not None else 0.0
