@@ -3388,10 +3388,17 @@ def gui_dropdown(parent, var, options: list, command=None, tips=None):
             tk.Label(tip["win"], text=text, font=F_SMALL, bg=GUI_LAVENDER,
                      fg=GUI_TXT, justify="left", padx=6, pady=3).pack(
                          padx=1, pady=1)
-            # beside the menu, level with the highlighted entry
-            x = menu.winfo_rootx() + menu.winfo_width() + 2
-            y = menu.winfo_rooty() + menu.yposition(i)
-            tip["win"].geometry(f"+{x}+{y}")
+            # directly left of the dropdown, level with the highlighted
+            # entry: the menu drops below the button, so its position is
+            # the button's (a posted menu reports none of its own)
+            tip["win"].update_idletasks()
+            try:
+                dy = menu.yposition(i)
+            except tk.TclError:
+                dy = 0
+            x = mb.winfo_rootx() - tip["win"].winfo_reqwidth() - 6
+            y = mb.winfo_rooty() + mb.winfo_height() + dy
+            tip["win"].geometry(f"+{max(x, 0)}+{y}")
 
         menu.bind("<<MenuSelect>>", select)
         menu.bind("<Unmap>", hide)
@@ -5605,11 +5612,9 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     side.pack_propagate(False)
 
     gui_label(side, "Bead matching", font=F_TITLE).pack(anchor="w")
-    # soft-chosen from the parameters window; still changeable here
-    if v["global_sweep"].get() and not v["flat_field"].get():
-        v["method"].set("default")
-    elif v["flat_field"].get():
-        v["method"].set("quick")
+    # the method is the remembered one (last_settings / the loaded save);
+    # global_sweep / flat_field are old settings without a control and
+    # no longer force it back to default on every visit (2026-10-19)
     if v["method"].get() == "trained" and state.filter is None:
         v["method"].set("default")          # no filter loaded in this run
     if v["method"].get() not in ("default", "quick", "strict", "broad",
