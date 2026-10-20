@@ -185,6 +185,7 @@ class Bar:
         self.frac = None                # progress inside the stage, if known
         self.t0 = time.time()
         self.shown = False              # quick commands never draw a bar
+        self.where = ""                 # output folder, see bar_where
         self.DELAY = 0.5
         self.tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
         self.out = sys.stdout
@@ -279,6 +280,14 @@ def bar_step(label: str) -> None:
 def bar_tick(i: int, n: int) -> None:
     if _BAR is not None:
         _BAR.tick(i, n)
+        _bar_notify(_BAR)
+
+
+def bar_where(folder) -> None:
+    """Tell the running bar which folder its files are written to; the
+    window's progress bar shows it under the stage (GuiProgress)."""
+    if _BAR is not None:
+        _BAR.where = str(folder)
         _bar_notify(_BAR)
 
 
@@ -2828,6 +2837,13 @@ def timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
 
+def results_tag(cfg: dict) -> str:
+    """The results name as a file-name prefix: "test-quill_" or "" --
+    every file in a results folder starts with it (2026-10-20)."""
+    name = str(cfg["output"].get("run-name") or "").strip()
+    return f"{name}_" if name else ""
+
+
 def results_dir(cfg: dict, subfolder: str | None = None) -> Path:
     """
     HERE/<output.results-dir>, created on demand -- the home of every
@@ -2835,11 +2851,11 @@ def results_dir(cfg: dict, subfolder: str | None = None) -> Path:
     """
     root = HERE / cfg["output"].get("results-dir", "RESULTS")
     if subfolder:
-        # the results name (output.run-name, asked at Save and review /
-        # run) comes first: "<name>_<stamp> review"
+        # "<stamp>_<name>_<command>": the time stamp, the results name
+        # asked at Save and review / run (if any), then review or run
+        stamp, _, cmd = subfolder.partition(" ")
         name = str(cfg["output"].get("run-name") or "").strip()
-        if name:
-            subfolder = f"{name}_{subfolder}"
+        subfolder = "_".join(part for part in (stamp, name, cmd) if part)
         root = root / subfolder
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -2984,7 +3000,8 @@ def run(cfg: dict) -> None:
     print(f"  written : {len(ordered)}")
 
     outdir = results_dir(cfg, timestamp() + " run")
-    prefix = outdir / cfg["output"]["prefix"]
+    bar_where(outdir)
+    prefix = outdir / (results_tag(cfg) + cfg["output"]["prefix"])
     print(f"\nOutput folder  : {outdir.relative_to(HERE)}")
     log(f"writing outputs with prefix {prefix}")
     csv_path = prefix.with_suffix(".csv")
@@ -3003,10 +3020,10 @@ def run(cfg: dict) -> None:
     if cfg["output"].get("zoom", True):
         bar_step("rendering zoom")
         log("rendering zoom")
-        zp = prefix.with_name("shot_placement_zoom.png")
+        zp = prefix.with_name(results_tag(cfg) + "shot_placement_zoom.png")
         if draw_zoom(zp, beads, cfg, T, scan):
             print(f"Wrote {zp.name}")
-        dp = prefix.with_name("shot_distances.png")
+        dp = prefix.with_name(results_tag(cfg) + "shot_distances.png")
         if draw_distances(dp, beads, cfg, T, scan):
             print(f"Wrote {dp.name}  (bead radius and shot distances, um)")
 
@@ -3084,6 +3101,7 @@ def review(cfg: dict) -> None:
         say(f"      {n:5d}  {reason}")
 
     outdir = results_dir(cfg, timestamp() + " review")
+    bar_where(outdir)
 
     # 'check' folded in: the registration report goes into the same
     # folder as the pictures, so one folder holds everything needed to
@@ -3094,10 +3112,11 @@ def review(cfg: dict) -> None:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         report_registration(cfg)
-    (outdir / "check.txt").write_text(buf.getvalue().lstrip("\n"))
-    say(f"Wrote {(outdir / 'check.txt').relative_to(HERE)}")
+    tag = results_tag(cfg)
+    (outdir / f"{tag}check.txt").write_text(buf.getvalue().lstrip("\n"))
+    say(f"Wrote {(outdir / f'{tag}check.txt').relative_to(HERE)}")
 
-    png = outdir / "review.png"
+    png = outdir / f"{tag}review.png"
     show = bool(cfg["output"].get("review-show", True))
     if show:
         import matplotlib
@@ -3112,12 +3131,12 @@ def review(cfg: dict) -> None:
     draw_overlay(png, beads, shots, cfg, T, scan, show, only_accepted=True)
     say(f"Wrote {png.relative_to(HERE)}")
 
-    zp = outdir / "review_zoom.png"
+    zp = outdir / f"{tag}review_zoom.png"
     bar_step("rendering review_zoom.png")
     if draw_zoom(zp, beads, cfg, T, scan):
         say(f"Wrote {zp.relative_to(HERE)}  (close-up of the densest "
             f"patch of selected beads)")
-    dp = outdir / "review_distances.png"
+    dp = outdir / f"{tag}review_distances.png"
     if draw_distances(dp, beads, cfg, T, scan):
         say(f"Wrote {dp.relative_to(HERE)}  (bead radius and shot "
             f"distances, um)")
@@ -3745,7 +3764,22 @@ class GuiBoxTool:
             self.on_change(None)
 
 
-GUI_PROGRESS = "#2ca02c"     # progress bars: the accepted-bead green
+GUI_PROGRESS = GUI_NAVY      # progress bars: fallback block colour
+# the blocks run through viridis from left (yellow) to right (dark blue)
+GUI_PROGRESS_VIRIDIS = ("#fde725", "#5ec962", "#21918c", "#3b528b", "#440154")
+
+
+def gui_viridis(t: float) -> str:
+    """Colour at position t (0-1) along the viridis ramp above."""
+    stops = GUI_PROGRESS_VIRIDIS
+    t = min(max(float(t), 0.0), 1.0) * (len(stops) - 1)
+    i = min(int(t), len(stops) - 2)
+    f = t - i
+    a = [int(stops[i][k:k + 2], 16) for k in (1, 3, 5)]
+    b = [int(stops[i + 1][k:k + 2], 16) for k in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(round(x + (y - x) * f)) for x, y in zip(a, b))
+GUI_PROGRESS_BLOCK = 10      # block width, px (2 px gap), like the Win95 control
+GUI_PROGRESS_SHARE = 0.75    # the trough takes this much of the width, centred
 
 
 def gui_run_in_thread(win, work, done) -> None:
@@ -3799,13 +3833,26 @@ class GuiProgress:
     def __init__(self, parent, titles: tuple, height: int = 14):
         import time
         self.titles, self.height = titles, height
-        self.widget = tk.Canvas(parent, height=height, bg=GUI_BOX,
-                                highlightthickness=1,
-                                highlightbackground=GUI_DARK)
-        self.fill = self.widget.create_rectangle(0, 0, 0, height,
-                                                 fill=GUI_PROGRESS, width=0)
-        self.text = self.widget.create_text(4, height // 2, anchor="w",
+        # Windows 95 look: the stage with the time left above a sunken
+        # trough that fills with navy blocks, and the folder being written
+        # under it (drawn in _draw). `height` is the trough's.
+        self.line_h = px(15)
+        self.top = self.line_h + px(2)            # where the trough starts
+        self.widget = tk.Canvas(parent, height=self.top + height + self.line_h,
+                                bg=GUI_BG, highlightthickness=0)
+        self.text = self.widget.create_text(0, self.line_h // 2, anchor="n",
                                             text="", font=F_SMALL, fill=GUI_TXT)
+        self.where = self.widget.create_text(0, self.top + height + self.line_h // 2,
+                                             anchor="n", text="", font=F_SMALL,
+                                             fill="#3a3a3a")
+        self.trough = self.widget.create_rectangle(0, 0, 0, 0,
+                                                   fill=GUI_BOX, width=0)
+        self.bevel = (self.widget.create_line(0, 0, 0, 0, fill=GUI_DARK),
+                      self.widget.create_line(0, 0, 0, 0, fill=GUI_WHITE))
+        self.blocks: list = []
+        self.fill = None                 # kept for callers that read it
+        self.widget.bind("<Configure>", lambda _e: self._draw(*self._last))
+        self._last = (0.0, "", "")
         self._time = time
         self._run = None                 # the bar being followed, see _note
         _BAR_HOOKS.append(self.update)
@@ -3872,11 +3919,34 @@ class GuiProgress:
         left = max(total - done - (now - starts[bar.i - 1]), 0.0) if hist else None
         return frac, left
 
-    def _draw(self, frac: float, label: str) -> None:
-        w = max(self.widget.winfo_width(), 1)
-        self.widget.coords(self.fill, 0, 0, int(w * min(max(frac, 0.0), 1.0)),
-                           self.height)
-        self.widget.itemconfig(self.text, text=label)
+    def _draw(self, frac: float, label: str, where: str = "") -> None:
+        self._last = (frac, label, where)
+        c, h, t = self.widget, self.height, self.top
+        w = max(c.winfo_width(), 1)
+        tw = int(w * GUI_PROGRESS_SHARE)          # the trough, centred
+        x0, x1 = (w - tw) // 2, (w - tw) // 2 + tw
+        c.coords(self.trough, x0, t, x1, t + h)
+        c.coords(self.bevel[0], x1 - 1, t, x0, t, x0, t + h - 1)          # dark: top, left
+        c.coords(self.bevel[1], x0, t + h - 1, x1 - 1, t + h - 1, x1 - 1, t)  # light: bottom, right
+        # the blocks: as many as fit in the filled part
+        step = GUI_PROGRESS_BLOCK + 2
+        n_full = max(int((tw - 4) / step), 1)     # blocks in a full trough
+        n = int((tw - 4) * min(max(frac, 0.0), 1.0) / step)
+        while len(self.blocks) < n:
+            i = len(self.blocks)
+            self.blocks.append(c.create_rectangle(
+                x0 + 2 + i * step, t + 3, x0 + 2 + i * step + GUI_PROGRESS_BLOCK,
+                t + h - 3, fill=GUI_PROGRESS, width=0))
+        for i, b in enumerate(self.blocks):      # follow a resize; viridis
+            c.coords(b, x0 + 2 + i * step, t + 3,   # by position in the trough
+                     x0 + 2 + i * step + GUI_PROGRESS_BLOCK, t + h - 3)
+            c.itemconfig(b, fill=gui_viridis(i / max(n_full - 1, 1)))
+        c.coords(self.text, w // 2, 1)
+        c.coords(self.where, w // 2, t + h + 2)
+        while len(self.blocks) > n:
+            c.delete(self.blocks.pop())
+        c.itemconfig(self.text, text=label)
+        c.itemconfig(self.where, text=where)
 
     def _poll(self) -> None:
         try:
@@ -3894,14 +3964,15 @@ class GuiProgress:
             if left is not None:
                 label += (f"   about {left:.0f} s left" if left >= 1
                           else "   finishing...")
-            self._draw(frac, label)
+            where = getattr(bar, "where", "")
+            self._draw(frac, label, f"writing to  {where}" if where else "")
         elif self._run is not None:
             # finished: remember how long each stage took, then clear
             starts = self._run["starts"] + [self._time.time()]
             self._save_times(self._run["bar"].title,
                              [b - a for a, b in zip(starts, starts[1:])])
             self._run = None
-            self._draw(0.0, "")
+            self._draw(0.0, "", "")
         self.widget.after(self.POLL_MS, self._poll)
 
 
@@ -5315,7 +5386,7 @@ def gui_review_into(state: GuiState, layer, status, master=None) -> None:
                + "  -- pictures and check.txt in RESULTS")
         # the folder review() just wrote: the newest "... review"
         folders = sorted((HERE / cfg["output"].get("results-dir", "RESULTS")).glob(
-            "* review"), key=lambda p: p.stat().st_mtime)
+            "*_review"), key=lambda p: p.stat().st_mtime)
         if folders and master is not None:
             gui_review_window(master, folders[-1])
 
@@ -5373,9 +5444,8 @@ def gui_review_window(master, folder: Path):
     their shots) and review_zoom.png (close-up, every category), one at
     a time, with the usual zoom and drag."""
     import cv2
-    pics = [p for p in (folder / "review.png", folder / "review_zoom.png",
-                        folder / "review_distances.png")
-            if p.exists()]
+    pics = [p for name in ("review.png", "review_zoom.png", "review_distances.png")
+            for p in sorted(folder.glob(f"*{name}")) if p.name.endswith(name)]
     if not pics:
         return None
     win = tk.Toplevel(master, bg=GUI_BG)
@@ -5776,7 +5846,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     bottom = tk.Frame(win, bg=GUI_BG, padx=8, pady=6)
     bottom.pack(fill="x", side="bottom")
     # save and review / run progress: a green bar along the bottom edge
-    win.progress = GuiProgress(bottom, ("review", "run"), height=px(14))
+    win.progress = GuiProgress(bottom, ("review", "run"), height=px(18))
     win.progress.widget.pack(side="bottom", fill="x", pady=(4, 0))
     status = gui_small(bottom, "left-drag = draw the box     "
                                "right-drag = move the view     "
@@ -5911,16 +5981,18 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
     v["method"].trace_add("write", step_state)
     step_state()
     # progress of the analysis, under the button (see GuiProgress)
-    win.analyze_bar = GuiProgress(side, ("analyze",), height=px(14))
+    win.analyze_bar = GuiProgress(side, ("analyze",), height=px(18))
     win.analyze_bar.widget.pack(fill="x", pady=(3, 0))
     gui_small(side, "left-drag a box on the image, then analyze;\n"
                     "the box stays -- Clear box empties it so the same\n"
                     "area can be analyzed again with another method",
               justify="left", anchor="w").pack(anchor="w", fill="x",
                                                pady=(2, 8))
+    # Reject box was dropped on 2026-10-20 (reject by hand instead);
+    # Clear all blobs is the File menu's "Clear all beads" as a button
     for t, fn in (("Accept box", lambda: set_many("accept")),
-                  ("Reject box", lambda: set_many("reject")),
-                  ("Clear box", lambda: clear_box())):
+                  ("Clear box", lambda: clear_box()),
+                  ("Clear all blobs", lambda: clear_beads())):
         gui_button(side, t, fn).pack(fill="x", pady=2)
     draw_mode = tk.BooleanVar(win, False)
     gui_toggle(side, draw_mode, "Manual selection",
@@ -6339,7 +6411,7 @@ def gui_pick_window(master, state: GuiState):
     bottom = tk.Frame(win, bg=GUI_BG, padx=8, pady=6)
     bottom.pack(fill="x", side="bottom")
     # save and review / run progress: a green bar along the bottom edge
-    win.progress = GuiProgress(bottom, ("review", "run"), height=px(14))
+    win.progress = GuiProgress(bottom, ("review", "run"), height=px(18))
     win.progress.widget.pack(side="bottom", fill="x", pady=(4, 0))
     status = gui_small(bottom, "right-click = set pending pixel     "
                                "Tab = next box     Ctrl+V = paste     "
@@ -6679,7 +6751,7 @@ def gui_pick_window(master, state: GuiState):
                 set_status(f"run stopped: {err}")
                 return
             folders = sorted((HERE / cfg["output"].get("results-dir",
-                                                        "RESULTS")).glob("* run"),
+                                                        "RESULTS")).glob("*_run"),
                              key=lambda p: p.stat().st_mtime)
             folder = folders[-1] if folders else None
             set_status(f"run done -- {folder.name if folder else 'RESULTS'}")
