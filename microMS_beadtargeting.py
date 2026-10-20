@@ -457,9 +457,17 @@ CONFIG = {
         # "dense-two-rings"  both rings packed at the crater width
         # "center"           one shot on the bead centre; the own-bead
         #                    crater check is skipped for it on purpose
+        # "triple-graded"    three rings: ring 1 dense (craters touching),
+        #                    ring 2 medium (the ring rule), ring 3 light
+        #                    (light-spacing-factor x spot-spacing along
+        #                    the arc, at least min-spots)
+        # "triple-medium"    three rings, all medium
+        # "triple-dense-inner"  rings 1 and 2 dense, ring 3 light
         "shot-pattern": "ring",
         "ring2-offset-um": 30,
         "ring2-spots": 12,
+        "ring3-offset-um": 15,      # ring 3 beyond ring 2 (2026-10-19)
+        "light-spacing-factor": 1.5,
     },
 
     # Laser footprint. Affects ONLY the crater-overlap check; it moves
@@ -1339,11 +1347,13 @@ def pattern_rings(bead: Bead, cfg: dict, R1: float,
     if pattern == "center":
         return [(0.0, [0.0])]
     if pattern not in ("two-rings", "two-rings-12",
-                       "dense-ring", "dense-two-rings"):
+                       "dense-ring", "dense-two-rings",
+                       "triple-graded", "triple-medium", "triple-dense-inner"):
         return [(R1, angles1)]
     offset = float(sp.get("edge-offset", 15))
     rot = float(sp.get("rotation-offset-deg", 0.0))
     R2 = R1 + float(sp.get("ring2-offset-um", 30))
+    R3 = R2 + float(sp.get("ring3-offset-um", 15))
 
     def packed(R: float, extra_rot: float) -> list[float]:
         # circular_pack works from the bead radius and adds the edge
@@ -1372,6 +1382,24 @@ def pattern_rings(bead: Bead, cfg: dict, R1: float,
     dense1 = dense(R1, 0.0)
     if pattern == "dense-ring":
         return [(R1, dense1)]
+    if pattern in ("triple-graded", "triple-medium", "triple-dense-inner"):
+        # three rings, each staggered against the one inside it
+        def light(R: float, extra_rot: float) -> list[float]:
+            spacing = (float(sp.get("spot-spacing", 60))
+                       * float(sp.get("light-spacing-factor", 1.5)))
+            n = max(int(math.floor(2 * math.pi * R / spacing)),
+                    int(sp.get("min-spots", 4)))
+            return [rot + extra_rot + 360.0 * k / n for k in range(n)]
+        kinds = {"triple-graded": (dense, packed, light),
+                 "triple-medium": (packed, packed, packed),
+                 "triple-dense-inner": (dense, dense, light)}[pattern]
+        rings, turn = [], 0.0
+        for R, make in zip((R1, R2, R3), kinds):
+            n = len(make(R, 0.0))
+            if rings:
+                turn += stagger(len(rings[-1][1]), n)
+            rings.append((R, make(R, turn)))
+        return rings
     n2 = len(dense(R2, 0.0))
     return [(R1, dense1), (R2, dense(R2, stagger(len(dense1), n2)))]
 
@@ -3566,6 +3594,91 @@ def gui_attach_drag_pan(fig, ax, widget=None, when=None, button=1):
     return drag
 
 
+class GuiOverlay:
+    """
+    Instant shapes drawn on the Tk canvas ABOVE the matplotlib picture,
+    for anything that follows the mouse: the rubber-band boxes and the
+    pending circle. Nothing of matplotlib runs while they move -- a
+    full figure draw costs 100-200 ms and even blitting needs one such
+    frame at the start -- so the shape appears and follows the pointer
+    at once; the real redraw happens once, when the gesture ends.
+    Positions are data coordinates, converted through the axes
+    transform, so update() can put them back after a zoom or pan.
+    """
+
+    def __init__(self, fig, ax):
+        self.fig, self.ax = fig, ax
+        self.tkc = getattr(fig.canvas, "_tkcanvas", None)
+        self.items: dict = {}
+        self.shapes: dict = {}
+        if self.tkc is not None:
+            fig.canvas.mpl_connect("draw_event", lambda _e: self.update())
+
+    def _xy(self, x: float, y: float):
+        """Data -> Tk canvas pixels (Tk's y runs down)."""
+        px, py = self.ax.transData.transform((x, y))
+        return float(px), float(self.fig.bbox.height - py)
+
+    def rect(self, x0, y0, x1, y1, color: str, dash=None, fill: bool = True):
+        self.shapes["rect"] = (x0, y0, x1, y1, color, dash, fill)
+        self.update()
+
+    def circle(self, cx, cy, r, color: str):
+        self.shapes["circle"] = (cx, cy, r, color)
+        self.update()
+
+    def clear(self) -> None:
+        self.shapes.clear()
+        if self.tkc is not None:
+            for ids in self.items.values():
+                for i in ids:
+                    self.tkc.delete(i)
+        self.items.clear()
+
+    def update(self) -> None:
+        """(Re)draw every shape at its data position."""
+        if self.tkc is None:
+            return
+        for key, shape in self.shapes.items():
+            if key == "rect":
+                x0, y0, x1, y1, color, dash, fill = shape
+                a, b = self._xy(x0, y0), self._xy(x1, y1)
+                coords = (min(a[0], b[0]), min(a[1], b[1]),
+                          max(a[0], b[0]), max(a[1], b[1]))
+                if key not in self.items:
+                    kw = {"outline": color, "width": 1}
+                    if dash:
+                        kw["dash"] = dash
+                    if fill:
+                        kw.update(fill=color, stipple="gray25")
+                    self.items[key] = [self.tkc.create_rectangle(*coords, **kw)]
+                else:
+                    self.tkc.coords(self.items[key][0], *coords)
+            elif key == "circle":
+                cx, cy, r, color = shape
+                c = self._xy(cx, cy)
+                e = self._xy(cx + r, cy)
+                rp = abs(e[0] - c[0])
+                oval = (c[0] - rp, c[1] - rp, c[0] + rp, c[1] + rp)
+                h = (c[0] - 4, c[1], c[0] + 4, c[1])
+                v = (c[0], c[1] - 4, c[0], c[1] + 4)
+                if key not in self.items:
+                    self.items[key] = [
+                        self.tkc.create_oval(*oval, outline=color, width=1,
+                                             dash=(2, 2)),
+                        self.tkc.create_line(*h, fill=color, width=1),
+                        self.tkc.create_line(*v, fill=color, width=1)]
+                else:
+                    o, lh, lv = self.items[key]
+                    self.tkc.coords(o, *oval)
+                    self.tkc.coords(lh, *h)
+                    self.tkc.coords(lv, *v)
+        for ids in self.items.values():       # above the picture, which a
+            for i in ids:                     # window resize re-creates
+                self.tkc.tag_raise(i)
+        self.tkc.update_idletasks()
+
+
 class GuiBoxTool:
     """Rubber-band rectangle on the image, drawn with a left-drag
     whenever `mode_var` (the manual accept/reject toggle) is off. The
@@ -3582,6 +3695,7 @@ class GuiBoxTool:
                               alpha=0.15, ec="#1f77b4", lw=1.5,
                               visible=False)
         ax.add_patch(self.rect)
+        self.overlay = GuiOverlay(fig, ax)  # the band while dragging
         fig.canvas.mpl_connect("button_press_event", self._press)
         fig.canvas.mpl_connect("motion_notify_event", self._motion)
         fig.canvas.mpl_connect("button_release_event", self._release)
@@ -3593,17 +3707,14 @@ class GuiBoxTool:
         if ev.button != 1 or ev.inaxes is not self.ax or not self.active(ev):
             return
         self.start = (ev.xdata, ev.ydata)
-        self.rect.set_bounds(ev.xdata, ev.ydata, 0, 0)
-        self.rect.set_visible(True)
         self.widget.config(cursor="crosshair")
+        self.overlay.rect(ev.xdata, ev.ydata, ev.xdata, ev.ydata, "#1f77b4")
 
     def _motion(self, ev):
         if self.start is None or ev.xdata is None:
             return
         x0, y0 = self.start
-        self.rect.set_bounds(min(x0, ev.xdata), min(y0, ev.ydata),
-                             abs(ev.xdata - x0), abs(ev.ydata - y0))
-        self.fig.canvas.draw_idle()
+        self.overlay.rect(x0, y0, ev.xdata, ev.ydata, "#1f77b4")
 
     def _release(self, ev):
         if self.start is None or ev.button != 1:
@@ -3611,10 +3722,17 @@ class GuiBoxTool:
         x0, y0 = self.start
         self.start = None
         self.widget.config(cursor="")
+        self.overlay.clear()
         if ev.xdata is None or abs(ev.xdata - x0) < 8 or abs(ev.ydata - y0) < 8:
             return                         # a click, not a box
         self.box = (min(x0, ev.xdata), max(x0, ev.xdata),
                     min(y0, ev.ydata), max(y0, ev.ydata))
+        # the box itself is a patch in data coordinates (it moves with
+        # the view and stays until cleared): one full draw, after the
+        # gesture
+        self.rect.set_bounds(self.box[0], self.box[2],
+                             self.box[1] - self.box[0], self.box[3] - self.box[2])
+        self.rect.set_visible(True)
         self.fig.canvas.draw_idle()
         if self.on_change:
             self.on_change(self.box)
@@ -3829,6 +3947,7 @@ class GuiCircleTool:
         ax.add_patch(self.ring)
         self.cross = ax.plot([], [], "+", color=GUI_PENDING, ms=8, mew=0.8,
                              visible=False)[0]
+        self.overlay = GuiOverlay(fig, ax)  # the pending circle, instant
         fig.canvas.mpl_connect("button_press_event", self._press)
         fig.canvas.mpl_connect("motion_notify_event", self._motion)
         fig.canvas.mpl_connect("button_release_event", self._release)
@@ -3849,12 +3968,18 @@ class GuiCircleTool:
         self._show()
 
     def _show(self):
+        # the ring and cross artists are kept for the no-Tk backends; on
+        # Tk the overlay draws the circle instantly instead
         self.ring.center = self.centre
         self.ring.set_radius(max(self.r, 0.5))
-        self.ring.set_visible(True)
         self.cross.set_data([self.centre[0]], [self.centre[1]])
-        self.cross.set_visible(True)
-        self.fig.canvas.draw_idle()
+        if self.overlay.tkc is not None:
+            self.overlay.circle(self.centre[0], self.centre[1],
+                                max(self.r, 0.5), GUI_PENDING)
+        else:
+            self.ring.set_visible(True)
+            self.cross.set_visible(True)
+            self.fig.canvas.draw_idle()
         d_um = 2 * self.r * self.um_per_px()
         self.status(f"circle at x {self.centre[0]:.0f}  y {self.centre[1]:.0f}"
                     f"   diameter {d_um:.0f} um ({2 * self.r:.0f} px)"
@@ -3864,9 +3989,11 @@ class GuiCircleTool:
     def drop(self, why: str = ""):
         self.centre, self.r, self.drag = None, 0.0, None
         self.editing, self.on_enter = False, self.on_set
-        self.ring.set_visible(False)
-        self.cross.set_visible(False)
-        self.fig.canvas.draw_idle()
+        self.overlay.clear()
+        if self.ring.get_visible():
+            self.ring.set_visible(False)
+            self.cross.set_visible(False)
+            self.fig.canvas.draw_idle()
         if why:
             self.status(why)
 
@@ -3934,6 +4061,7 @@ class GuiZoomBox:
         self.rect = Rectangle((0, 0), 0, 0, fill=False, ec="#000080",
                               lw=1.5, ls="--", visible=False)
         ax.add_patch(self.rect)
+        self.overlay = GuiOverlay(fig, ax)  # the band while dragging
         fig.canvas.mpl_connect("button_press_event", self._press)
         fig.canvas.mpl_connect("motion_notify_event", self._motion)
         fig.canvas.mpl_connect("button_release_event", self._release)
@@ -3943,23 +4071,22 @@ class GuiZoomBox:
                 or ev.xdata is None):
             return
         self.start = (ev.xdata, ev.ydata)
-        self.rect.set_bounds(ev.xdata, ev.ydata, 0, 0)
-        self.rect.set_visible(True)
+        self.overlay.rect(ev.xdata, ev.ydata, ev.xdata, ev.ydata, "#000080",
+                          dash=(4, 2), fill=False)
 
     def _motion(self, ev):
         if self.start is None or ev.xdata is None:
             return
         x0, y0 = self.start
-        self.rect.set_bounds(min(x0, ev.xdata), min(y0, ev.ydata),
-                             abs(ev.xdata - x0), abs(ev.ydata - y0))
-        self.fig.canvas.draw_idle()
+        self.overlay.rect(x0, y0, ev.xdata, ev.ydata, "#000080",
+                          dash=(4, 2), fill=False)
 
     def _release(self, ev):
         if self.start is None or ev.button != 1:
             return
         x0, y0 = self.start
         self.start = None
-        self.rect.set_visible(False)
+        self.overlay.clear()
         if ev.xdata is not None and abs(ev.xdata - x0) >= 2 \
                 and abs(ev.ydata - y0) >= 2:
             # keep the view's aspect: grow the shorter side of the box
@@ -4025,14 +4152,25 @@ def gui_load_scan(path: Path):
 # the patterns, in the order the "Laser shot pattern..." tiles show
 # them: CONFIG value, tile name, one-line description
 GUI_PATTERNS = [
+    # row 1: one ring
     ("ring", "Ring", "one ring just off the edge (original)"),
+    ("dense-ring", "Dense ring", "one ring, spots touching"),
+    ("center", "Center", "one shot on the bead centre"),
+    # row 2: two rings
     ("two-rings", "Two rings", "a second ring further out, same spacing rule"),
     ("two-rings-12", "Two rings, 12", "second ring fixed at 12 shots"),
-    ("dense-ring", "Dense ring", "one ring, craters touching"),
-    ("dense-two-rings", "Dense two rings", "both rings, craters touching"),
-    ("center", "Center", "one shot on the bead centre"),
+    ("dense-two-rings", "Dense two rings", "both rings, spots touching"),
+    # row 3: three rings
+    ("triple-graded", "Triple: dense / medium / light",
+     "ring 1 packed to the bead, ring 2 medium, ring 3 light"),
+    ("triple-medium", "Triple: medium x3", "three rings at medium spacing"),
+    ("triple-dense-inner", "Triple: dense / dense / light",
+     "rings 1 and 2 packed, ring 3 light"),
 ]
-GUI_PATTERN_IN = 2.0        # side of a pattern picture, inches
+GUI_TWO_RING = ("two-rings", "two-rings-12", "dense-two-rings")
+GUI_THREE_RING = ("triple-graded", "triple-medium", "triple-dense-inner")
+GUI_PATTERN_IN = 1.5        # side of a pattern tile in the dialog, inches (2.0 until 2026-10-19)
+GUI_PATTERN_SMALL_IN = 1.0  # the picture in the parameters window
 
 
 def gui_pattern_canvas(parent, size_in: float = GUI_PATTERN_IN):
@@ -4119,9 +4257,10 @@ def gui_pattern_dialog(parent, v: dict, cfg: dict) -> None:
             widget.bind("<Button-1>", lambda _e, k=key: choose(k), add="+")
 
     bf = tk.Frame(body, bg=GUI_BG)
-    bf.grid(row=2, column=0, columnspan=3, sticky="e", pady=(8, 0))
-    gui_small(bf, f"drawn for a {bead_um:g} um bead; hollow = dropped by "
-                  f"the crater checks").pack(side="left", padx=(0, 12))
+    bf.grid(row=(len(GUI_PATTERNS) + 2) // 3, column=0, columnspan=3,
+            sticky="e", pady=(8, 0))
+    gui_small(bf, f"drawn for a {bead_um:g} um bead and a "
+                  f"{footprint_um(cfg):g} um laser").pack(side="left", padx=(0, 12))
     gui_button(bf, "Cancel", dlg.destroy, width=8).pack(side="left")
     dlg.bind("<Escape>", lambda _e: dlg.destroy())
     dlg.transient(parent)
@@ -4162,6 +4301,8 @@ GUI_DEFAULTS = {
     "broad_stringency": "100",      # broad method only: 100 = as found, lower = stricter
     "laser_offset": "15",           # first ring offset from the bead edge, um; seeded from CONFIG
     "ring2_offset": "15",           # second ring offset from ring 1, um
+    "ring3_offset": "15",           # third ring offset from ring 2, um
+    "laser_um": "30",               # laser spot diameter, um; seeded from CONFIG's footprint
     "shot_pattern": "ring",         # seeded from CONFIG shot-placement
     "acq_method": "",               # .run acqMethod; seeded from CONFIG
     "run_directory": "",            # .run directory; seeded from CONFIG
@@ -4259,6 +4400,7 @@ def gui_make_vars(master, cfg: dict) -> dict:
     v["bead_um"].set(f"{float(cfg['bead-diameter']):g}")
     v["isolation_um"].set(f"{float(cfg['min-bead-separation']):g}")
     v["laser_offset"].set(f"{float(cfg['shot-placement'].get('edge-offset', 15)):g}")
+    v["laser_um"].set(f"{footprint_um(cfg):g}")
     v["shot_pattern"].set(str(cfg["shot-placement"].get("shot-pattern", "ring")))
     run_hdr = cfg["output"].get("run") or {}
     v["acq_method"].set(str(run_hdr.get("acqMethod", "")))
@@ -4303,6 +4445,12 @@ def gui_apply_params(cfg: dict, v: dict) -> dict:
     sp["edge-offset"] = gui_float(v["laser_offset"], float(sp.get("edge-offset", 15)))
     sp["ring2-offset-um"] = gui_float(v["ring2_offset"],
                                       float(sp.get("ring2-offset-um", 30)))
+    sp["ring3-offset-um"] = gui_float(v["ring3_offset"],
+                                      float(sp.get("ring3-offset-um", 15)))
+    # the laser diameter box IS the footprint: dense packing and the
+    # drawn spots follow it (CONFIG's focal spot + beam scan otherwise)
+    cfg["focal-spot-um"] = gui_float(v["laser_um"], footprint_um(cfg))
+    cfg["beam-scan"] = False
     return cfg
 
 
@@ -5464,7 +5612,7 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     row[0] += 1
     pf.grid(row=bead_row, column=1, rowspan=4, sticky="ne", pady=4)
     gui_label(pf, "Laser shot pattern").pack(anchor="w", pady=(0, 2))
-    p_fig, p_ax, p_canvas, p_w = gui_pattern_canvas(pf, GUI_PATTERN_IN / 2)
+    p_fig, p_ax, p_canvas, p_w = gui_pattern_canvas(pf, GUI_PATTERN_SMALL_IN)
     p_w.pack(side="left", anchor="w")
     pinfo = tk.Frame(pf, bg=GUI_BG)
     pinfo.pack(side="left", anchor="w", padx=(10, 0))
@@ -5496,36 +5644,56 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     v["bead_um"].trace_add("write", redraw_pattern)
     redraw_pattern()
 
+    # -- laser diameter: dense packing and the drawn spots follow it ------
+    f = line("Laser diameter")
+    gui_box(f, v["laser_um"], 5).pack(side="left")
+    gui_small(f, "um  -- spot size; dense rings pack spots this far apart").pack(
+        side="left", padx=(3, 0))
+
     # -- laser offset: first ring from the bead edge ------------------------
     f = line("Laser offset")
     gui_box(f, v["laser_offset"], 5).pack(side="left")
     gui_small(f, "um  -- first ring offset from the bead edge").pack(
         side="left", padx=(3, 0))
 
-    # -- second ring offset, only for patterns with a second ring -----------
-    # two linked boxes: from ring 1, and from the bead "center" = laser
-    # offset + ring offset; editing either updates the other
-    r2_row = row[0]
-    r2_lbl = gui_label(body, "Second ring offset")
-    r2_lbl.grid(row=r2_row, column=0, sticky="w", pady=4)
-    r2_frame = tk.Frame(body, bg=GUI_BG)
-    r2_frame.grid(row=r2_row, column=1, sticky="w", padx=(18, 0), pady=4)
-    row[0] += 1
-    gui_small(r2_frame, "from ring 1").pack(side="left")
-    gui_box(r2_frame, v["ring2_offset"], 5).pack(side="left", padx=(3, 3))
-    gui_small(r2_frame, "um").pack(side="left", padx=(0, 10))
-    gui_small(r2_frame, "from bead center").pack(side="left")
-    r2_total = tk.StringVar(win, "")
-    gui_box(r2_frame, r2_total, 5).pack(side="left", padx=(3, 3))
-    gui_small(r2_frame, "um").pack(side="left")
+    # -- second and third ring offsets, shown for the patterns that have
+    # them. Each row has two linked boxes: the offset from the ring inside
+    # it, and "from bead center" = laser offset + every ring offset up to
+    # it (15 / 15 -> 30 / 15 -> 45). Editing any box updates the others.
+    def ring_row(label: str, inner: str, var, total):
+        r = row[0]
+        lbl = gui_label(body, label)
+        lbl.grid(row=r, column=0, sticky="w", pady=4)
+        frame = tk.Frame(body, bg=GUI_BG)
+        frame.grid(row=r, column=1, sticky="w", padx=(18, 0), pady=4)
+        row[0] += 1
+        gui_small(frame, f"from {inner}").pack(side="left")
+        gui_box(frame, var, 5).pack(side="left", padx=(3, 3))
+        gui_small(frame, "um").pack(side="left", padx=(0, 10))
+        gui_small(frame, "from bead center").pack(side="left")
+        gui_box(frame, total, 5).pack(side="left", padx=(3, 3))
+        gui_small(frame, "um").pack(side="left")
+        return lbl, frame
+
+    r2_total, r3_total = tk.StringVar(win, ""), tk.StringVar(win, "")
+    r2_lbl, r2_frame = ring_row("Second ring offset", "ring 1",
+                                v["ring2_offset"], r2_total)
+    r3_lbl, r3_frame = ring_row("Third ring offset", "ring 2",
+                                v["ring3_offset"], r3_total)
     linking = [False]
 
-    def r2_from_ring(*_a):
+    def offs():
+        return (gui_float(v["laser_offset"], 0), gui_float(v["ring2_offset"], 0),
+                gui_float(v["ring3_offset"], 0))
+
+    def totals_from_rings(*_a):
         if linking[0]:
             return
         linking[0] = True
         try:
-            r2_total.set(f"{gui_float(v['laser_offset'], 0) + gui_float(v['ring2_offset'], 0):g}")
+            a, b, c = offs()
+            r2_total.set(f"{a + b:g}")
+            r3_total.set(f"{a + b + c:g}")
         finally:
             linking[0] = False
 
@@ -5534,30 +5702,45 @@ def gui_select_window(master, state: GuiState, on_continue=None):
             return
         linking[0] = True
         try:
-            v["ring2_offset"].set(
-                f"{gui_float(r2_total, 0) - gui_float(v['laser_offset'], 0):g}")
+            a, b, c = offs()
+            b = gui_float(r2_total, 0) - a
+            v["ring2_offset"].set(f"{b:g}")
+            r3_total.set(f"{a + b + c:g}")
         finally:
             linking[0] = False
 
-    def r2_shown(*_a):
+    def r3_from_total(*_a):
+        if linking[0]:
+            return
+        linking[0] = True
+        try:
+            a, b, c = offs()
+            v["ring3_offset"].set(f"{gui_float(r3_total, 0) - a - b:g}")
+        finally:
+            linking[0] = False
+
+    def rings_shown(*_a):
         if not r2_lbl.winfo_exists():
             return
-        if v["shot_pattern"].get() in ("two-rings", "two-rings-12",
-                                       "dense-two-rings"):
-            r2_lbl.grid()
-            r2_frame.grid()
-        else:
-            r2_lbl.grid_remove()
-            r2_frame.grid_remove()
+        pat = v["shot_pattern"].get()
+        for shown, lbl, frame in ((pat in GUI_TWO_RING + GUI_THREE_RING, r2_lbl, r2_frame),
+                                  (pat in GUI_THREE_RING, r3_lbl, r3_frame)):
+            if shown:
+                lbl.grid()
+                frame.grid()
+            else:
+                lbl.grid_remove()
+                frame.grid_remove()
 
-    v["ring2_offset"].trace_add("write", r2_from_ring)
-    v["laser_offset"].trace_add("write", r2_from_ring)
+    for key in ("laser_offset", "ring2_offset", "ring3_offset"):
+        v[key].trace_add("write", totals_from_rings)
+        v[key].trace_add("write", redraw_pattern)
+    v["laser_um"].trace_add("write", redraw_pattern)
     r2_total.trace_add("write", r2_from_total)
-    v["shot_pattern"].trace_add("write", r2_shown)
-    v["laser_offset"].trace_add("write", redraw_pattern)
-    v["ring2_offset"].trace_add("write", redraw_pattern)
-    r2_from_ring()
-    r2_shown()
+    r3_total.trace_add("write", r3_from_total)
+    v["shot_pattern"].trace_add("write", rings_shown)
+    totals_from_rings()
+    rings_shown()
 
     # -- footnote + continue -----------------------------------------------
     gui_hrule(body).grid(row=row[0], column=0, columnspan=2, sticky="ew",
