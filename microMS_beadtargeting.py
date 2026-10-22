@@ -340,7 +340,6 @@ FIDUCIALS = [
     {"x_px": 18402.98, "y_px": 4752.72, "x_um": 86156.10, "y_um": -32527.70},
     {"x_px": 18167.14, "y_px": 6129.78, "x_um": 85434.20, "y_um": -38068.80},
     {"x_px": 15963.29, "y_px": 6167.73, "x_um": 76605.90, "y_um": -38305.60},
-    {"x_px": 14008.84, "y_px": 6390.02, "x_um": 688672.00, "y_um": -39338.20},
     {"x_px": 12290.21, "y_px": 6324.96, "x_um": 62101.90, "y_um": -39300.20},
     {"x_px": 10888.75, "y_px": 6395.44, "x_um": 56599.90, "y_um": -39562.70},
     {"x_px": 9462.89, "y_px": 6314.11, "x_um": 50888.60, "y_um": -39341.00},
@@ -2190,12 +2189,13 @@ def position_name(cfg: dict, index: int, shot,
     the flexImaging .txt.
 
     The .xeo and .run are matched by name alone, so whatever this
-    returns must be used identically in both. Default (2026-10-20):
-    <grid name><ring letter><shot number>, e.g. AB01X1 -- the bead's
-    grid cell and number (name_beads), the ring the shot sits on as a
-    letter (X = ring 1, Y = ring 2, Z = ring 3; RING_LETTERS) and the
-    shot's number
-    around that ring in placement order, from 1. No underscores.
+    returns must be used identically in both. Default (2026-10-22):
+    R<region>X<x>Y<y> as in the instrument's own geometry files, e.g.
+    R00X8157Y3400 -- x = stage x_um / PLATE_UNIT_UM, y = -y_um /
+    PLATE_UNIT_UM (sign flipped so the name stays positive), rounded.
+    The 2026-10-20 scheme is still available as the pattern
+    "{name}{ringletter}{shot}" (AB01X1: grid name, ring letter X/Y/Z,
+    shot number around the ring). No underscores.
     An output.position-name pattern overrides it; the fields are
     name, ringletter, shot, ring, angle, region, n, i, j, px, py, bead.
     """
@@ -2205,7 +2205,7 @@ def position_name(cfg: dict, index: int, shot,
             else f"B{shot.bead_id:04d}")
     angle = int(round(shot.angle_deg)) % 360
     ring = int(getattr(shot, "ring", 1))
-    pattern = out.get("position-name") or "{name}{ringletter}{shot}"
+    pattern = out.get("position-name") or "R{region:02d}X{i:.0f}Y{j:.0f}"
     return pattern.format(name=name, ring=ring,
                           ringletter=RING_LETTERS[min(ring, len(RING_LETTERS)) - 1],
                           shot=int(getattr(shot, "shot", 1)),
@@ -2213,7 +2213,7 @@ def position_name(cfg: dict, index: int, shot,
                           region=out.get("region", 0),
                           n=index + 1,
                           i=shot.x_um / PLATE_UNIT_UM,   # plate units
-                          j=shot.y_um / PLATE_UNIT_UM,
+                          j=-shot.y_um / PLATE_UNIT_UM,  # positive, as in R00X8157Y3400
                           px=shot.x_px, py=shot.y_px,
                           bead=shot.bead_id)
 
@@ -5701,6 +5701,29 @@ def gui_size_limits_px(state: GuiState, cfg: dict) -> dict:
     return cfg
 
 
+def next_sample_name(cfg: dict, base: str) -> str:
+    """
+    <base><n> for the .run sampleName, n counting up per export:
+    beadrun1, beadrun2, ... The base is the results name (if one was
+    given) followed by the sampleName box, so results name test2 gives
+    test2beadrun1. n is one more than the highest number already
+    written with this base by any .run under RESULTS, so the count
+    survives restarts and split _001/_002 files share a number.
+    """
+    import re
+    root = HERE / cfg["output"].get("results-dir", "RESULTS")
+    pat = re.compile(r'sampleName="' + re.escape(base) + r'(\d+)"')
+    used = [0]
+    for f in root.glob("*_run/*.run"):
+        try:
+            m = pat.search(f.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        if m:
+            used.append(int(m.group(1)))
+    return f"{base}{max(used) + 1}"
+
+
 def gui_run_cfg(state: GuiState, fids: list) -> dict:
     import copy
     cfg = gui_size_limits_px(state,
@@ -5712,7 +5735,8 @@ def gui_run_cfg(state: GuiState, fids: list) -> dict:
     if state.v["run_directory"].get().strip():
         run_hdr["directory"] = state.v["run_directory"].get().strip()
     if state.v["sample_name"].get().strip():
-        run_hdr["sampleName"] = state.v["sample_name"].get().strip()
+        run_hdr["sampleName"] = next_sample_name(
+            cfg, state.run_name + state.v["sample_name"].get().strip())
     if state.path is not None:
         cfg["input"]["scan"] = str(state.path)
     cfg["output"]["review-show"] = False
