@@ -6717,7 +6717,16 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
              if layer.visible(b) else float("inf") for b in state.beads]
         i = int(np.argmin(d))
         if not math.isfinite(d[i]) or d[i] > 40:
-            return
+            # nothing visible here. A bead rejected by hand is hidden
+            # while its Show box is off; clicking its spot again
+            # re-accepts it anyway, so a slip can be undone without
+            # ticking "rejected" first.
+            d = [math.hypot(b.x_px - ev.xdata, b.y_px - ev.ydata)
+                 if not layer.visible(b) and b.manual == "reject"
+                 else float("inf") for b in state.beads]
+            i = int(np.argmin(d))
+            if not math.isfinite(d[i]) or d[i] > 40:
+                return
         if flip_timer["id"] is not None:    # second press of a double-click
             win.after_cancel(flip_timer["id"])
             flip_timer["id"] = None
