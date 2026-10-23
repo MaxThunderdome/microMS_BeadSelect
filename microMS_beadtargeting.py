@@ -471,7 +471,16 @@ CONFIG = {
         #                    the arc, at least min-spots)
         # "triple-medium"    three rings, all medium
         # "triple-dense-inner"  rings 1 and 2 dense, ring 3 light
-        "shot-pattern": "ring",
+        #
+        # 2026-10-22, the four main patterns (the rest are "Advanced"
+        # in the pattern dialog). Fixed counts, whatever the bead size:
+        # "ring-6"           6 shots on ring 1 at 0, 60, 120 ... deg
+        # "ring-8"           8 shots on ring 1 at 0, 45, 90 ... deg
+        # "two-rings-8"      8 on ring 1 and 8 on ring 2 at the same
+        #                    angles (aligned, not staggered)
+        # "center"           as above
+        "shot-pattern": "ring-6",
+        "fixed-ring-spots": {"ring-6": 6, "ring-8": 8, "two-rings-8": 8},
         "ring2-offset-um": 30,
         "ring2-spots": 12,
         "ring3-offset-um": 15,      # ring 3 beyond ring 2 (2026-10-19)
@@ -1361,6 +1370,19 @@ def pattern_rings(bead: Bead, cfg: dict, R1: float,
     pattern = sp.get("shot-pattern", "ring")
     if pattern == "center":
         return [(0.0, [0.0])]
+    fixed = (sp.get("fixed-ring-spots")
+             or {"ring-6": 6, "ring-8": 8, "two-rings-8": 8})
+    if pattern in fixed:
+        # 2026-10-22: a fixed number of shots evenly round ring 1,
+        # from rotation-offset-deg (0 by default), whatever the bead
+        # size; two-rings-8 repeats them on ring 2 at the SAME angles
+        n = max(int(fixed[pattern]), 1)
+        rot = float(sp.get("rotation-offset-deg", 0.0))
+        angles = [rot + 360.0 * k / n for k in range(n)]
+        if pattern == "two-rings-8":
+            R2 = R1 + float(sp.get("ring2-offset-um", 30))
+            return [(R1, angles), (R2, list(angles))]
+        return [(R1, angles)]
     if pattern not in ("two-rings", "two-rings-12",
                        "dense-ring", "dense-two-rings",
                        "triple-graded", "triple-medium", "triple-dense-inner"):
@@ -1417,6 +1439,23 @@ def pattern_rings(bead: Bead, cfg: dict, R1: float,
         return rings
     n2 = len(dense(R2, 0.0))
     return [(R1, dense1), (R2, dense(R2, stagger(len(dense1), n2)))]
+
+
+def shot_overlaps(shots: list[Shot], laser_um: float) -> tuple[float, int]:
+    """
+    2026-10-22, the laser-diameter warning. Over every live shot of
+    every bead (so neighbouring beads count too): the distance between
+    the closest two shot centres, and how many pairs sit closer than
+    `laser_um`, the laser diameter -- two shots closer than that are
+    craters that overlap. Moves nothing; place_shots is unchanged.
+    (inf, 0) with fewer than two shots.
+    """
+    pts = np.array([[s.x_um, s.y_um] for s in shots if not s.dropped], float)
+    if len(pts) < 2:
+        return math.inf, 0
+    tree = cKDTree(pts)
+    d, _ = tree.query(pts, k=2)
+    return float(d[:, 1].min()), len(tree.query_pairs(float(laser_um)))
 
 
 def place_shots(beads: list[Bead], cfg: dict,
@@ -4583,23 +4622,37 @@ def gui_load_scan(path: Path):
 
 # the patterns, in the order the "Laser shot pattern..." tiles show
 # them: CONFIG value, tile name, one-line description
-GUI_PATTERNS = [
+# 2026-10-22: the four patterns shown first; the rest sit behind the
+# dialog's "Advanced" button. GUI_PATTERNS is all of them, in display
+# order, so names and lookups keep working for every key.
+GUI_PATTERNS_MAIN = [
+    ("ring-6", "Ring 6", "6 shots at 0, 60, 120 ... deg"),
+    ("ring-8", "Ring 8", "8 shots at 0, 45, 90 ... deg"),
+    ("center", "Center", "one shot on the bead centre"),
+    ("two-rings-8", "Two rings 8 + 8",
+     "8 on each ring at the same angles; ring 2 at the second ring offset"),
+]
+GUI_PATTERNS_ADVANCED = [
     # row 1: one ring
     ("ring", "Ring", "one ring just off the edge (original)"),
-    ("dense-ring", "Dense ring", "one ring, spots touching"),
+    ("dense-ring", "Dense ring, laser-packed",
+     "one ring, spots one laser diameter apart"),
     ("center", "Center", "one shot on the bead centre"),
     # row 2: two rings
     ("two-rings", "Two rings", "a second ring further out, same spacing rule"),
     ("two-rings-12", "Two rings, 12", "second ring fixed at 12 shots"),
-    ("dense-two-rings", "Dense two rings", "both rings, spots touching"),
+    ("dense-two-rings", "Dense two rings, laser-packed",
+     "both rings, spots one laser diameter apart"),
     # row 3: three rings
     ("triple-graded", "Triple: dense / medium / light",
-     "ring 1 packed to the bead, ring 2 medium, ring 3 light"),
+     "ring 1 laser-packed, ring 2 medium, ring 3 light"),
     ("triple-medium", "Triple: medium x3", "three rings at medium spacing"),
     ("triple-dense-inner", "Triple: dense / dense / light",
-     "rings 1 and 2 packed, ring 3 light"),
+     "rings 1 and 2 laser-packed, ring 3 light"),
 ]
-GUI_TWO_RING = ("two-rings", "two-rings-12", "dense-two-rings")
+GUI_PATTERNS = GUI_PATTERNS_MAIN + [
+    p for p in GUI_PATTERNS_ADVANCED if p[0] != "center"]
+GUI_TWO_RING = ("two-rings-8", "two-rings", "two-rings-12", "dense-two-rings")
 GUI_THREE_RING = ("triple-graded", "triple-medium", "triple-dense-inner")
 GUI_PATTERN_IN = 1.5        # side of a pattern tile in the dialog, inches (2.0 until 2026-10-19)
 GUI_PATTERN_SMALL_IN = 1.0  # the picture in the parameters window
@@ -4669,31 +4722,65 @@ def gui_pattern_dialog(parent, v: dict, cfg: dict) -> None:
         v["shot_pattern"].set(key)
         dlg.destroy()
 
-    for i, (key, name, desc) in enumerate(GUI_PATTERNS):
+    def tile(parent, key: str, name: str, desc: str, r: int, c: int):
         chosen = key == current
         bg = GUI_NAVY if chosen else GUI_BG
-        cell = tk.Frame(body, bg=bg, padx=4, pady=4)
-        cell.grid(row=i // 3, column=i % 3, padx=6, pady=6)
+        cell = tk.Frame(parent, bg=bg, padx=4, pady=4)
+        cell.grid(row=r, column=c, padx=6, pady=6, sticky="n")
         fig, ax, canvas, w = gui_pattern_canvas(cell)
         n = gui_pattern_draw(ax, key, bead_um, cfg)
         canvas.draw()
-        w.pack()
+        w.pack(anchor="w")
         title = gui_label(cell, f"{name}  ({n} shots)", bg=bg,
-                          fg=GUI_WHITE if chosen else GUI_TXT)
+                          fg=GUI_WHITE if chosen else GUI_TXT,
+                          wraplength=px(150), justify="left")
         title.pack(anchor="w", pady=(3, 0))
         note = gui_small(cell, desc, bg=bg,
-                         fg=GUI_WHITE if chosen else "#3a3a3a")
+                         fg=GUI_WHITE if chosen else "#3a3a3a",
+                         wraplength=px(150), justify="left")
         note.pack(anchor="w")
         for widget in (cell, w, title, note):
             widget.config(cursor="hand2")
             widget.bind("<Button-1>", lambda _e, k=key: choose(k), add="+")
 
+    # the four main patterns in one row
+    main = tk.Frame(body, bg=GUI_BG)
+    main.grid(row=0, column=0, sticky="w")
+    for i, (key, name, desc) in enumerate(GUI_PATTERNS_MAIN):
+        tile(main, key, name, desc, 0, i)
+
+    # 2026-10-22: the older patterns unfold below the "Advanced" button
+    # (opened already when one of them is the current choice)
+    adv = tk.Frame(body, bg=GUI_BG)
+    gui_small(adv, "Advanced -- counts follow the bead size; "
+                   "\"laser-packed\" rings space their spots by the "
+                   "Laser diameter box", fg="#3a3a3a").grid(
+        row=0, column=0, columnspan=3, sticky="w", padx=6)
+    for i, (key, name, desc) in enumerate(GUI_PATTERNS_ADVANCED):
+        tile(adv, key, name, desc, 1 + i // 3, i % 3)
+    adv_open = [current in {k for k, _, _ in GUI_PATTERNS_ADVANCED}
+                and current != "center"]
+
+    def show_adv():
+        if adv_open[0]:
+            adv.grid(row=2, column=0, sticky="w", pady=(4, 0))
+            adv_btn.config(text="Advanced  ^")
+        else:
+            adv.grid_remove()
+            adv_btn.config(text="Advanced  v")
+
+    def toggle_adv():
+        adv_open[0] = not adv_open[0]
+        show_adv()
+
     bf = tk.Frame(body, bg=GUI_BG)
-    bf.grid(row=(len(GUI_PATTERNS) + 2) // 3, column=0, columnspan=3,
-            sticky="e", pady=(8, 0))
+    bf.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    adv_btn = gui_button(bf, "Advanced  v", toggle_adv, width=12)
+    adv_btn.pack(side="left")
+    gui_button(bf, "Cancel", dlg.destroy, width=8).pack(side="right")
     gui_small(bf, f"drawn for a {bead_um:g} um bead and a "
-                  f"{footprint_um(cfg):g} um laser").pack(side="left", padx=(0, 12))
-    gui_button(bf, "Cancel", dlg.destroy, width=8).pack(side="left")
+                  f"{footprint_um(cfg):g} um laser").pack(side="right", padx=(0, 12))
+    show_adv()
     dlg.bind("<Escape>", lambda _e: dlg.destroy())
     dlg.transient(parent)
     dlg.update_idletasks()
@@ -4735,7 +4822,7 @@ GUI_DEFAULTS = {
     "ring2_offset": "15",           # second ring offset from ring 1, um
     "ring3_offset": "15",           # third ring offset from ring 2, um
     "laser_um": "30",               # laser spot diameter, um; seeded from CONFIG's footprint
-    "shot_pattern": "ring",         # seeded from CONFIG shot-placement
+    "shot_pattern": "ring-6",       # seeded from CONFIG shot-placement
     "acq_method": "",               # .run acqMethod; seeded from CONFIG
     "run_directory": "",            # .run directory; seeded from CONFIG
     "sample_name": "",              # .run sampleName; seeded from CONFIG
@@ -6158,12 +6245,6 @@ def gui_select_window(master, state: GuiState, on_continue=None):
     v["bead_um"].trace_add("write", redraw_pattern)
     redraw_pattern()
 
-    # -- laser diameter: dense packing and the drawn spots follow it ------
-    f = line("Laser diameter")
-    gui_box(f, v["laser_um"], 5).pack(side="left")
-    gui_small(f, "um  -- spot size; dense rings pack spots this far apart").pack(
-        side="left", padx=(3, 0))
-
     # -- laser offset: first ring from the bead edge ------------------------
     f = line("Laser offset")
     gui_box(f, v["laser_offset"], 5).pack(side="left")
@@ -6194,6 +6275,16 @@ def gui_select_window(master, state: GuiState, on_continue=None):
                                 v["ring2_offset"], r2_total)
     r3_lbl, r3_frame = ring_row("Third ring offset", "ring 2",
                                 v["ring3_offset"], r3_total)
+
+    # -- laser diameter, below the offsets (2026-10-22): a warning
+    # flag only -- shots whose centres are closer than this are
+    # reported before the fiducials window; it moves no shot of the
+    # four main patterns. The Advanced dense rings still pack to it.
+    f = line("Laser diameter")
+    gui_box(f, v["laser_um"], 5).pack(side="left")
+    gui_small(f, "um  -- warning only: shots closer than this overlap "
+                 "(Advanced dense rings pack to it)").pack(
+        side="left", padx=(3, 0))
     linking = [False]
 
     def offs():
@@ -6277,7 +6368,32 @@ def gui_select_window(master, state: GuiState, on_continue=None):
 
 # ---- window 2: bead selection ------------------------------------------
 
-def gui_beads_window(master, state: GuiState, on_continue=None):
+def gui_overlap_warning(state: GuiState, win) -> bool:
+    """
+    2026-10-22: before the fiducials window, place the shots the run
+    would fire (the window's pattern, offsets and provisional scale)
+    and compare the closest two shot centres with the laser diameter
+    box. Closer than that: a warning with Continue / Cancel. True to
+    go on, False to go back. Nothing about the shots is changed.
+    """
+    cfg = gui_refilter(state)
+    shots = place_shots(state.beads, cfg, state.T)
+    laser = footprint_um(cfg)
+    closest, pairs = shot_overlaps(shots, laser)
+    if closest >= laser:
+        return True
+    return gui_ask(
+        win, "Laser shots overlap",
+        f"The laser shots overlap: the closest two shot centres are "
+        f"{closest:.0f} um apart, less than the {laser:g} um laser "
+        f"diameter ({pairs} pair{'s' if pairs != 1 else ''} closer than "
+        f"that). This is only a warning.\n\n"
+        f"Continue or cancel?  Cancel goes back to the first window.",
+        yes="Continue", no="Cancel")
+
+
+def gui_beads_window(master, state: GuiState, on_continue=None,
+                     on_back=None):
     import copy
     v = state.v
     win = tk.Toplevel(master, bg=GUI_BG)
@@ -6813,6 +6929,14 @@ def gui_beads_window(master, state: GuiState, on_continue=None):
         if no_selection():
             return
         gui_settings_save(v)
+        if not gui_overlap_warning(state, win):
+            # Cancel: back to the parameters window (2026-10-22). The
+            # beads stay in state and are shown again on Continue.
+            state.on_beads_changed = None
+            win.destroy()
+            if on_back:
+                on_back()
+            return
         if on_continue:
             on_continue()
 
@@ -7292,7 +7416,13 @@ def gui_select(cfg: dict) -> None:
         if _gui_load_scan(state, lambda t: (sel.status.config(text=t),
                                              sel.update_idletasks())):
             gui_settings_save(state.v)
-            gui_beads_window(root, state, on_continue=open_pick)
+            gui_beads_window(root, state, on_continue=open_pick,
+                             on_back=back_to_params)
+
+    def back_to_params():
+        sel.deiconify()
+        sel.lift()
+        sel.focus_force()
 
     sel = gui_select_window(root, state, on_continue=open_beads)
 
