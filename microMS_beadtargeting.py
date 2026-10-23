@@ -4690,6 +4690,12 @@ GUI_PATTERNS = GUI_PATTERNS_MAIN + [
 GUI_TWO_RING = ("two-rings-8", "two-rings", "two-rings-12", "dense-two-rings")
 GUI_THREE_RING = ("triple-graded", "triple-medium", "triple-dense-inner")
 GUI_PATTERN_IN = 1.5        # side of a pattern tile in the dialog, inches (2.0 until 2026-10-19)
+# 2026-10-23: the dialog tiles are fixed illustrations -- a 90 um bead,
+# a 30 um laser, ring 1 15 um off the edge and ring 2 30 um further out
+# (so the 8 + 8 discs do not overlap) -- whatever the window says.
+# Only the picture in the parameters window follows the window.
+GUI_PATTERN_DEMO = {"bead-um": 90.0, "laser-um": 30.0, "edge-offset": 15.0,
+                    "ring2-offset-um": 30.0, "ring3-offset-um": 15.0}
 GUI_PATTERN_SMALL_IN = 1.0  # the picture in the parameters window
 
 
@@ -4750,7 +4756,15 @@ def gui_pattern_dialog(parent, v: dict, cfg: dict) -> None:
     gui_title_strip(dlg, "Laser shot pattern -- click one")
     body = tk.Frame(dlg, bg=GUI_BG, padx=14, pady=10)
     body.pack(fill="both", expand=True)
-    bead_um = gui_float(v["bead_um"], float(cfg["bead-diameter"]))
+    # fixed illustrations (GUI_PATTERN_DEMO), not the window's values
+    import copy
+    cfg = copy.deepcopy(cfg)
+    demo = GUI_PATTERN_DEMO
+    cfg["shot-placement"].update({k: demo[k] for k in
+                                  ("edge-offset", "ring2-offset-um",
+                                   "ring3-offset-um")})
+    cfg["focal-spot-um"], cfg["beam-scan"] = demo["laser-um"], False
+    bead_um = demo["bead-um"]
     current = v["shot_pattern"].get()
 
     def choose(key: str):
