@@ -44,6 +44,43 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+
+def _ensure_dependencies() -> None:
+    """
+    2026-10-22, for a new user: look for every third-party package
+    the script needs (requirements.txt) before importing any of it,
+    and install the missing ones with this interpreter's pip -- after
+    asking, when there is a console to ask on. tkinter cannot come
+    from pip; the window code reports that itself.
+    """
+    import importlib
+    import importlib.util
+    import subprocess
+    needed = {"numpy": "numpy>=1.24", "scipy": "scipy>=1.10",
+              "cv2": "opencv-python>=4.8", "matplotlib": "matplotlib>=3.7"}
+    missing = [spec for mod, spec in needed.items()
+               if importlib.util.find_spec(mod) is None]
+    if not missing:
+        return
+    print("microMS_beadtargeting needs: " + ", ".join(missing))
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            answer = input("Install them now with pip? [Y/n] ").strip().lower()
+            if answer not in ("", "y", "yes"):
+                sys.exit("Install them and run again:  pip install "
+                         + " ".join(missing))
+    except EOFError:
+        pass                                    # no console: just install
+    cmd = [sys.executable, "-m", "pip", "install", *missing]
+    print(" ".join(cmd), flush=True)
+    if subprocess.call(cmd) != 0:
+        sys.exit("pip could not install them -- by hand:  pip install "
+                 + " ".join(missing))
+    importlib.invalidate_caches()
+
+
+_ensure_dependencies()
+
 import numpy as np
 from scipy.spatial import cKDTree
 
