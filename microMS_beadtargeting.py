@@ -3660,16 +3660,14 @@ def init_fonts(root) -> str:
 
 
 # ---- About ----------------------------------------------------------
-# <...> are placeholders still to be filled in.
 
 ABOUT_LINES = [
-    ("Grace <surname>", F_TITLE),
-    ("<title>, Lam Lab, <Department>, University of California, Davis",
-     F_SMALL),
-    ("<email>", F_SMALL),
+    ("Daniel Parker", F_TITLE),
+    ("Lam Lab, Chemistry, UC Davis", F_SMALL),
+    ("danparker@ucdavis.edu", F_SMALL),
     ("", F_SMALL),
     ("Dr. Elizabeth K. Neumann", F_TITLE),
-    ("<title>, <Department>, <Institution>", F_SMALL),
+    ("Chemistry, UC Davis, since 2022", F_SMALL),
     ("Co-author of microMS", F_SMALL),
     ("", F_SMALL),
     ("Based on microMS", F_TITLE),
@@ -4626,11 +4624,11 @@ def gui_load_scan(path: Path):
 # dialog's "Advanced" button. GUI_PATTERNS is all of them, in display
 # order, so names and lookups keep working for every key.
 GUI_PATTERNS_MAIN = [
-    ("ring-6", "Ring 6", "6 shots at 0, 60, 120 ... deg"),
-    ("ring-8", "Ring 8", "8 shots at 0, 45, 90 ... deg"),
-    ("center", "Center", "one shot on the bead centre"),
-    ("two-rings-8", "Two rings 8 + 8",
-     "8 on each ring at the same angles; ring 2 at the second ring offset"),
+    # name only on the tile (no count, no note), 2 x 2
+    ("ring-6", "Ring 6", ""),
+    ("ring-8", "Ring 8", ""),
+    ("center", "Center", ""),
+    ("two-rings-8", "2 rings (8 shots each)", ""),
 ]
 GUI_PATTERNS_ADVANCED = [
     # row 1: one ring
@@ -4731,26 +4729,29 @@ def gui_pattern_dialog(parent, v: dict, cfg: dict) -> None:
         n = gui_pattern_draw(ax, key, bead_um, cfg)
         canvas.draw()
         w.pack(anchor="w")
-        title = gui_label(cell, f"{name}  ({n} shots)", bg=bg,
-                          fg=GUI_WHITE if chosen else GUI_TXT,
+        # a main tile carries its name alone; an Advanced tile adds
+        # the shot count (it follows the bead size) and a note
+        title = gui_label(cell, name if not desc else f"{name}  ({n} shots)",
+                          bg=bg, fg=GUI_WHITE if chosen else GUI_TXT,
                           wraplength=px(150), justify="left")
         title.pack(anchor="w", pady=(3, 0))
         note = gui_small(cell, desc, bg=bg,
                          fg=GUI_WHITE if chosen else "#3a3a3a",
                          wraplength=px(150), justify="left")
-        note.pack(anchor="w")
+        if desc:
+            note.pack(anchor="w")
         for widget in (cell, w, title, note):
             widget.config(cursor="hand2")
             widget.bind("<Button-1>", lambda _e, k=key: choose(k), add="+")
 
-    # the four main patterns in one row
+    # the four main patterns, 2 x 2
     main = tk.Frame(body, bg=GUI_BG)
     main.grid(row=0, column=0, sticky="w")
     for i, (key, name, desc) in enumerate(GUI_PATTERNS_MAIN):
-        tile(main, key, name, desc, 0, i)
+        tile(main, key, name, desc, i // 2, i % 2)
 
-    # 2026-10-22: the older patterns unfold below the "Advanced" button
-    # (opened already when one of them is the current choice)
+    # 2026-10-22: the older patterns unfold below the "Advanced" button,
+    # always folded to start with
     adv = tk.Frame(body, bg=GUI_BG)
     gui_small(adv, "Advanced -- counts follow the bead size; "
                    "\"laser-packed\" rings space their spots by the "
@@ -4758,8 +4759,7 @@ def gui_pattern_dialog(parent, v: dict, cfg: dict) -> None:
         row=0, column=0, columnspan=3, sticky="w", padx=6)
     for i, (key, name, desc) in enumerate(GUI_PATTERNS_ADVANCED):
         tile(adv, key, name, desc, 1 + i // 3, i % 3)
-    adv_open = [current in {k for k, _, _ in GUI_PATTERNS_ADVANCED}
-                and current != "center"]
+    adv_open = [False]
 
     def show_adv():
         if adv_open[0]:
@@ -5967,6 +5967,10 @@ class GuiBeadLayer:
     edge stays visible inside it, and a small black cross marks the
     centre; a rejected bead's circle is dashed. Off, the circles sit
     on the bead edge as before.
+
+    2026-10-22: with the "accepted" Show box off, an accepted bead's
+    green circle goes but its cross stays (marked()), and the cross
+    can still be clicked to flip the bead.
     """
 
     BIG_FACTOR = 2.0          # radius multiplier while big_var is on
@@ -6020,7 +6024,7 @@ class GuiBeadLayer:
                             b.x_px, b.x_px],
                            [b.y_px, b.y_px, float("nan"),
                             b.y_px - s, b.y_px + s])
-                x.set_visible(shown)
+                x.set_visible(shown or b.accepted)
             else:
                 c.set_radius(r)
                 c.set_linewidth(2.0 if b.manual else 1.3)
@@ -6030,6 +6034,12 @@ class GuiBeadLayer:
 
     def visible(self, b) -> bool:
         return bool(self.show[gui_bead_category(b)].get())
+
+    def marked(self, b) -> bool:
+        """True while the bead can be clicked: its circle is shown, or
+        (Manual accept / resizing on) it is accepted and so keeps its
+        centre cross whatever the Show boxes say."""
+        return self.visible(b) or (self.big() and bool(b.accepted))
 
     def add(self, b) -> None:
         """One more bead at the end, drawn without a full rebuild
@@ -6854,7 +6864,7 @@ def gui_beads_window(master, state: GuiState, on_continue=None,
         if not state.beads or circle.pending is not None:
             return                          # the circle tool has this press
         d = [math.hypot(b.x_px - ev.xdata, b.y_px - ev.ydata)
-             if layer.visible(b) else float("inf") for b in state.beads]
+             if layer.marked(b) else float("inf") for b in state.beads]
         i = int(np.argmin(d))
         if not math.isfinite(d[i]) or d[i] > 40:
             # nothing visible here. A bead rejected by hand is hidden
